@@ -4,8 +4,10 @@
 #include <HalStorage.h>
 #include <InflateReader.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 
 #include <algorithm>
+#include <cstdint>
 
 struct ZipInflateCtx {
   InflateReader reader;  // Must be first — callback casts uzlib_uncomp* to ZipInflateCtx*
@@ -18,6 +20,11 @@ struct ZipInflateCtx {
 namespace {
 constexpr uint16_t ZIP_METHOD_STORED = 0;
 constexpr uint16_t ZIP_METHOD_DEFLATED = 8;
+constexpr uint32_t INFLATE_DICT_SIZE = 32U * 1024U;
+
+uint32_t clampToU32(const size_t value) { return value > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(value); }
+
+uint32_t saturatingAddU32(const uint32_t a, const uint32_t b) { return MemoryBudget::saturatingAdd(a, b); }
 
 // RAII zip: opens the zip if not already open, closes on destruction only if
 // it performed the open.  Removes the wasOpen/close boilerplate from every method.
@@ -233,6 +240,10 @@ bool ZipFile::loadZipDetails() {
   // We scan the last 1KB (or the whole file if smaller) for the EOCD signature
   // 0x06054b50 is stored as 0x50, 0x4b, 0x05, 0x06 in little-endian
   const int scanRange = fileSize > 1024 ? 1024 : fileSize;
+  if (!MemoryBudget::hasHeapForTransientAlloc("ZIP", "EOCD scan buffer", static_cast<uint32_t>(scanRange),
+                                              4U * 1024U)) {
+    return false;
+  }
   const auto buffer = static_cast<uint8_t*>(malloc(scanRange));
   if (!buffer) {
     LOG_ERR("ZIP", "Failed to allocate memory for EOCD scan buffer");
@@ -380,6 +391,19 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
   const auto dataSize = trailingNullByte ? inflatedDataSize + 1 : inflatedDataSize;
+  uint32_t largestAlloc = clampToU32(dataSize);
+  uint32_t totalAlloc = clampToU32(dataSize);
+  if (fileStat.method == ZIP_METHOD_DEFLATED) {
+    const uint32_t deflatedBytes = clampToU32(deflatedDataSize);
+    largestAlloc = std::max(largestAlloc, deflatedBytes);
+    totalAlloc = saturatingAddU32(totalAlloc, deflatedBytes);
+  }
+  if (!MemoryBudget::hasHeapForOperation(
+          "ZIP", "ZIP item buffer extraction",
+          MemoryBudget::saturatingAdd(totalAlloc, MemoryBudget::TRANSIENT_ALLOC_HEADROOM),
+          MemoryBudget::saturatingAdd(largestAlloc, 4U * 1024U))) {
+    return nullptr;
+  }
   const auto data = static_cast<uint8_t*>(malloc(dataSize));
   if (data == nullptr) {
     LOG_ERR("ZIP", "Failed to allocate memory for output buffer (%zu bytes)", dataSize);
@@ -458,6 +482,9 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
   if (fileStat.method == ZIP_METHOD_STORED) {
     // no deflation, just read content
+    if (!MemoryBudget::hasHeapForTransientAlloc("ZIP", "stored ZIP stream buffer", clampToU32(chunkSize), 4U * 1024U)) {
+      return false;
+    }
     const auto buffer = static_cast<uint8_t*>(malloc(chunkSize));
     if (!buffer) {
       LOG_ERR("ZIP", "Failed to allocate memory for buffer");
@@ -489,6 +516,15 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
     ZipInflateCtx ctx;
     ctx.file = &file;
     ctx.fileRemaining = deflatedDataSize;
+    const uint32_t chunkBytes = clampToU32(chunkSize);
+    const uint32_t totalTransient = saturatingAddU32(INFLATE_DICT_SIZE, saturatingAddU32(chunkBytes, chunkBytes));
+    const uint32_t largestAlloc = std::max(INFLATE_DICT_SIZE, chunkBytes);
+    if (!MemoryBudget::hasHeapForOperation(
+            "ZIP", "deflated ZIP stream buffers",
+            MemoryBudget::saturatingAdd(totalTransient, MemoryBudget::TRANSIENT_ALLOC_HEADROOM),
+            MemoryBudget::saturatingAdd(largestAlloc, 4U * 1024U))) {
+      return false;
+    }
 
     if (!ctx.reader.init(true)) {
       LOG_ERR("ZIP", "Failed to init inflate reader (free=%u, maxAlloc=%u, chunk=%zu)", ESP.getFreeHeap(),

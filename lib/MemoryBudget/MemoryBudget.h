@@ -26,11 +26,33 @@ constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_MAX_ALLOC = 80U * 1024U
 constexpr uint32_t OPTIONAL_EPUB_REBUILD_MIN_FREE = 96U * 1024U;
 constexpr uint32_t OPTIONAL_EPUB_REBUILD_MIN_MAX_ALLOC = 48U * 1024U;
 constexpr uint32_t IMAGE_DECODER_HEADROOM = 16U * 1024U;
+constexpr uint32_t TRANSIENT_ALLOC_HEADROOM = 16U * 1024U;
 
 inline HeapSnapshot snapshot() { return {ESP.getFreeHeap(), ESP.getMaxAllocHeap()}; }
 
 inline bool hasHeap(const HeapSnapshot heap, const uint32_t minFree, const uint32_t minMaxAlloc) {
   return heap.freeHeap >= minFree && heap.maxAllocHeap >= minMaxAlloc;
+}
+
+inline uint32_t saturatingAdd(const uint32_t a, const uint32_t b) { return UINT32_MAX - a < b ? UINT32_MAX : a + b; }
+
+inline bool hasHeapForOperation(const char* tag, const char* action, const uint32_t minFree,
+                                const uint32_t minMaxAlloc) {
+  const auto heap = snapshot();
+  if (hasHeap(heap, minFree, minMaxAlloc)) {
+    return true;
+  }
+
+  LOG_ERR(tag, "Low heap for %s (%u free, %u max alloc, need %u/%u)", action ? action : "operation", heap.freeHeap,
+          heap.maxAllocHeap, minFree, minMaxAlloc);
+  return false;
+}
+
+inline bool hasHeapForTransientAlloc(const char* tag, const char* action, const uint32_t allocBytes,
+                                     const uint32_t freeHeadroom = TRANSIENT_ALLOC_HEADROOM,
+                                     const uint32_t maxAllocHeadroom = 0) {
+  return hasHeapForOperation(tag, action, saturatingAdd(allocBytes, freeHeadroom),
+                             saturatingAdd(allocBytes, maxAllocHeadroom));
 }
 
 inline char asciiLower(const char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }

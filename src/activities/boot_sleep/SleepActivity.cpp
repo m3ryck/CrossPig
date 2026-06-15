@@ -6,6 +6,7 @@
 #include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <MemoryBudget.h>
 #include <PNGdec.h>
 
 #include <algorithm>
@@ -789,10 +790,8 @@ void SleepActivity::renderOverlaySleepScreen() const {
       return OverlayDrawResult::NotFound;
     }
 
-    constexpr size_t MIN_FREE_HEAP = 60 * 1024;  // PNG decoder ~42 KB + overhead
-    if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
-      LOG_ERR("SLP", "Not enough heap for PNG overlay decoder: %u free, need %u for %s", ESP.getFreeHeap(),
-              static_cast<unsigned>(MIN_FREE_HEAP), filename.c_str());
+    constexpr uint32_t PNG_DECODER_APPROX_SIZE = 42U * 1024U;
+    if (!MemoryBudget::hasHeapForImageDecoder("SLP", "PNG overlay", PNG_DECODER_APPROX_SIZE)) {
       return OverlayDrawResult::Failed;
     }
     PNG* png = new (std::nothrow) PNG();

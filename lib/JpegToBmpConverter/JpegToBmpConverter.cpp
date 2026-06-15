@@ -5,6 +5,7 @@
 #include <JPEGDEC.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MemoryBudget.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -165,7 +166,26 @@ namespace {
 // Max MCU height supported by any JPEG (4:2:0 chroma = 16 rows, 4:4:4 = 8 rows)
 constexpr int MAX_MCU_HEIGHT = 16;
 constexpr size_t JPEG_DECODER_SIZE = 20 * 1024;
-constexpr size_t MIN_FREE_HEAP = JPEG_DECODER_SIZE + 32 * 1024;
+
+uint32_t dithererApproxBytes(const int width, const bool oneBit) {
+  if (oneBit || (!USE_8BIT_OUTPUT && USE_ATKINSON)) {
+    return static_cast<uint32_t>((width + 4) * sizeof(int16_t) * 3);
+  }
+  if (!USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG) {
+    return static_cast<uint32_t>((width + 2) * sizeof(int16_t) * 2);
+  }
+  return 0;
+}
+
+uint32_t dithererLargestAllocBytes(const int width, const bool oneBit) {
+  if (oneBit || (!USE_8BIT_OUTPUT && USE_ATKINSON)) {
+    return static_cast<uint32_t>((width + 4) * sizeof(int16_t));
+  }
+  if (!USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG) {
+    return static_cast<uint32_t>((width + 2) * sizeof(int16_t));
+  }
+  return 0;
+}
 
 // Static file pointer for JPEGDEC open callback.
 // Safe in single-threaded embedded context; never accessed concurrently.
@@ -515,8 +535,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
                                                      bool oneBit, bool crop, bool adaptiveContain) {
   LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
-    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+  if (!MemoryBudget::hasHeapForImageDecoder("JPG", "JPEG cover conversion", JPEG_DECODER_SIZE)) {
     return false;
   }
 
@@ -572,17 +591,35 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
           outHeight, targetWidth, targetHeight, cropOutput ? "cover" : "contain", geometry.srcXOffset_fp >> 16,
           geometry.srcYOffset_fp >> 16);
 
-  // Write BMP header with output dimensions
   int bytesPerRow;
   if (USE_8BIT_OUTPUT && !oneBit) {
-    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth + 3) / 4 * 4;
   } else if (oneBit) {
-    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth + 31) / 32 * 4;
   } else {
-    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
     bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
+  }
+
+  const uint32_t mcuBytes = static_cast<uint32_t>(MAX_MCU_HEIGHT * effectiveSrcW);
+  const uint32_t rowBytes = static_cast<uint32_t>(bytesPerRow);
+  const uint32_t scalingBytes = needsScaling ? static_cast<uint32_t>(outWidth * sizeof(uint32_t) * 2) : 0U;
+  const uint32_t ditherBytes = dithererApproxBytes(outWidth, oneBit);
+  const uint32_t transientBytes = mcuBytes + rowBytes + scalingBytes + ditherBytes;
+  const uint32_t ditherLargestAlloc = dithererLargestAllocBytes(outWidth, oneBit);
+  const uint32_t largestAlloc = std::max(std::max(mcuBytes, rowBytes), std::max(scalingBytes / 2U, ditherLargestAlloc));
+  if (!MemoryBudget::hasHeapForOperation("JPG", "JPEG cover conversion buffers",
+                                         transientBytes + MemoryBudget::TRANSIENT_ALLOC_HEADROOM,
+                                         largestAlloc + 4U * 1024U)) {
+    return false;
+  }
+
+  // Write BMP header only after heap preflight, so failed conversions do not leave a partial output.
+  if (USE_8BIT_OUTPUT && !oneBit) {
+    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
+  } else if (oneBit) {
+    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
+  } else {
+    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
   }
 
   BmpConvertCtx ctx = {};

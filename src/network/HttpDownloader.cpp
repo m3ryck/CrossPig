@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <MemoryBudget.h>
 #include <WiFi.h>
 #include <base64.h>
 #include <esp_crt_bundle.h>
@@ -305,6 +306,12 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     }
 #endif
 
+    if (!MemoryBudget::hasHeapForTransientAlloc("HTTP", "download body buffer", static_cast<uint32_t>(bufferSize),
+                                                8U * 1024U)) {
+      logNetworkState("Download buffer preflight failure");
+      esp_http_client_cleanup(client);
+      return HttpDownloader::HTTP_ERROR;
+    }
     auto buffer = makeUniqueNoThrow<char[]>(bufferSize);
     if (!buffer) {
       LOG_ERR("HTTP", "Failed to allocate %zu byte download buffer", bufferSize);

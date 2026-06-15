@@ -4,11 +4,13 @@
 #include <HalStorage.h>
 #include <InflateReader.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "BitmapHelpers.h"
 
@@ -55,6 +57,27 @@ inline uint8_t paethPredictor(uint8_t a, uint8_t b, uint8_t c) {
 namespace {
 // PNG constants
 uint8_t PNG_SIGNATURE[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+constexpr uint32_t INFLATE_DICT_SIZE = 32U * 1024U;
+
+uint32_t dithererApproxBytes(const int width, const bool oneBit) {
+  if (oneBit || (!USE_8BIT_OUTPUT && USE_ATKINSON)) {
+    return static_cast<uint32_t>((width + 4) * sizeof(int16_t) * 3);
+  }
+  if (!USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG) {
+    return static_cast<uint32_t>((width + 2) * sizeof(int16_t) * 2);
+  }
+  return 0;
+}
+
+uint32_t dithererLargestAllocBytes(const int width, const bool oneBit) {
+  if (oneBit || (!USE_8BIT_OUTPUT && USE_ATKINSON)) {
+    return static_cast<uint32_t>((width + 4) * sizeof(int16_t));
+  }
+  if (!USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG) {
+    return static_cast<uint32_t>((width + 2) * sizeof(int16_t));
+  }
+  return 0;
+}
 
 // PNG color types
 enum PngColorType : uint8_t {
@@ -585,6 +608,48 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     return false;
   }
 
+  // Calculate output dimensions before allocating so we can gate the whole transient set.
+  const bool containInsteadOfCrop =
+      crop && adaptiveContain &&
+      shouldContainAdaptive(static_cast<int>(width), static_cast<int>(height), targetWidth, targetHeight);
+  const bool cropOutput = crop && !containInsteadOfCrop;
+  const OutputGeometry geometry =
+      calculateOutputGeometry(static_cast<int>(width), static_cast<int>(height), targetWidth, targetHeight, cropOutput);
+  const int outWidth = geometry.outWidth;
+  const int outHeight = geometry.outHeight;
+  const bool needsScaling = geometry.needsScaling;
+  LOG_DBG("PNG", "Scaling %ux%u -> %dx%d (target %dx%d, mode=%s, offset %u,%u)", width, height, outWidth, outHeight,
+          targetWidth, targetHeight, cropOutput ? "cover" : "contain", geometry.srcXOffset_fp >> 16,
+          geometry.srcYOffset_fp >> 16);
+
+  int bytesPerRow;
+  if (USE_8BIT_OUTPUT && !oneBit) {
+    bytesPerRow = (outWidth + 3) / 4 * 4;
+  } else if (oneBit) {
+    bytesPerRow = (outWidth + 31) / 32 * 4;
+  } else {
+    bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
+  }
+
+  const uint32_t scanlineBytes = rawRowBytes * 2U;
+  const uint32_t rowBytes = static_cast<uint32_t>(bytesPerRow);
+  const uint32_t grayRowBytes = width;
+  const uint32_t scalingBytes =
+      needsScaling ? static_cast<uint32_t>(outWidth * (sizeof(uint32_t) + sizeof(uint16_t))) : 0U;
+  const uint32_t ditherBytes = dithererApproxBytes(outWidth, oneBit);
+  const uint32_t transientBytes =
+      scanlineBytes + INFLATE_DICT_SIZE + rowBytes + grayRowBytes + scalingBytes + ditherBytes;
+  const uint32_t largestAlloc =
+      std::max(std::max(INFLATE_DICT_SIZE, rawRowBytes),
+               std::max(std::max(rowBytes, grayRowBytes),
+                        std::max(needsScaling ? static_cast<uint32_t>(outWidth * sizeof(uint32_t)) : 0U,
+                                 dithererLargestAllocBytes(outWidth, oneBit))));
+  if (!MemoryBudget::hasHeapForOperation("PNG", "PNG conversion buffers",
+                                         transientBytes + MemoryBudget::TRANSIENT_ALLOC_HEADROOM,
+                                         largestAlloc + 4U * 1024U)) {
+    return false;
+  }
+
   // Initialize decode context
   PngDecodeContext ctx = {};
   ctx.file = &pngFile;
@@ -654,34 +719,6 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   // PNG IDAT data is zlib-wrapped: consume the 2-byte zlib header (CMF + FLG)
   ctx.reader.skipZlibHeader();
 
-  // Calculate output dimensions. Crop mode behaves like CSS object-fit: cover:
-  // scale to fill the requested box, then sample a centered source crop before dithering.
-  const bool containInsteadOfCrop =
-      crop && adaptiveContain &&
-      shouldContainAdaptive(static_cast<int>(width), static_cast<int>(height), targetWidth, targetHeight);
-  const bool cropOutput = crop && !containInsteadOfCrop;
-  const OutputGeometry geometry =
-      calculateOutputGeometry(static_cast<int>(width), static_cast<int>(height), targetWidth, targetHeight, cropOutput);
-  const int outWidth = geometry.outWidth;
-  const int outHeight = geometry.outHeight;
-  const bool needsScaling = geometry.needsScaling;
-  LOG_DBG("PNG", "Scaling %ux%u -> %dx%d (target %dx%d, mode=%s, offset %u,%u)", width, height, outWidth, outHeight,
-          targetWidth, targetHeight, cropOutput ? "cover" : "contain", geometry.srcXOffset_fp >> 16,
-          geometry.srcYOffset_fp >> 16);
-
-  // Write BMP header
-  int bytesPerRow;
-  if (USE_8BIT_OUTPUT && !oneBit) {
-    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
-    bytesPerRow = (outWidth + 3) / 4 * 4;
-  } else if (oneBit) {
-    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
-    bytesPerRow = (outWidth + 31) / 32 * 4;
-  } else {
-    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
-    bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
-  }
-
   // Allocate BMP row buffer
   auto* rowBuffer = static_cast<uint8_t*>(malloc(bytesPerRow));
   if (!rowBuffer) {
@@ -697,13 +734,24 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   Atkinson1BitDitherer* atkinson1BitDitherer = nullptr;
 
   if (oneBit) {
-    atkinson1BitDitherer = new Atkinson1BitDitherer(outWidth);
+    atkinson1BitDitherer = new (std::nothrow) Atkinson1BitDitherer(outWidth);
   } else if (!USE_8BIT_OUTPUT) {
     if (USE_ATKINSON) {
-      atkinsonDitherer = new AtkinsonDitherer(outWidth);
+      atkinsonDitherer = new (std::nothrow) AtkinsonDitherer(outWidth);
     } else if (USE_FLOYD_STEINBERG) {
-      fsDitherer = new FloydSteinbergDitherer(outWidth);
+      fsDitherer = new (std::nothrow) FloydSteinbergDitherer(outWidth);
     }
+  }
+  if ((oneBit && !atkinson1BitDitherer) || (!oneBit && !USE_8BIT_OUTPUT && USE_ATKINSON && !atkinsonDitherer) ||
+      (!oneBit && !USE_8BIT_OUTPUT && USE_FLOYD_STEINBERG && !fsDitherer)) {
+    LOG_ERR("PNG", "Failed to allocate ditherer");
+    delete atkinsonDitherer;
+    delete fsDitherer;
+    delete atkinson1BitDitherer;
+    free(rowBuffer);
+    free(ctx.currentRow);
+    free(ctx.previousRow);
+    return false;
   }
 
   // Scaling accumulators
@@ -713,8 +761,20 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   uint32_t nextOutY_srcStart = 0;
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint16_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = new (std::nothrow) uint16_t[outWidth]();
+    if (!rowAccum || !rowCount) {
+      LOG_ERR("PNG", "Failed to allocate scaling buffers");
+      delete[] rowAccum;
+      delete[] rowCount;
+      delete atkinsonDitherer;
+      delete fsDitherer;
+      delete atkinson1BitDitherer;
+      free(rowBuffer);
+      free(ctx.currentRow);
+      free(ctx.previousRow);
+      return false;
+    }
     nextOutY_srcStart = geometry.srcYOffset_fp + geometry.scaleY_fp;
   }
 
@@ -732,6 +792,14 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     free(ctx.currentRow);
     free(ctx.previousRow);
     return false;
+  }
+
+  if (USE_8BIT_OUTPUT && !oneBit) {
+    writeBmpHeader8bit(bmpOut, outWidth, outHeight);
+  } else if (oneBit) {
+    writeBmpHeader1bit(bmpOut, outWidth, outHeight);
+  } else {
+    writeBmpHeader2bit(bmpOut, outWidth, outHeight);
   }
 
   bool success = true;

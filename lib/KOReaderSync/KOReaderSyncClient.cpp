@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 #ifdef SIMULATOR
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -121,9 +122,14 @@ KOReaderSyncClient::Error validateAuthResponse(const char* body) {
 // Cloudflare tunnels send a 3-cert Google Trust Services chain. During the TLS handshake
 // mbedTLS makes many small allocations that collectively consume ~48KB of heap. With only
 // ~50KB free after WiFi connects, the session drove min-free-ever down to 2600 bytes before
-// failing with MBEDTLS_ERR_X509_ALLOC_FAILED (-0x2880). Check total free heap (not max
-// contiguous block) because the failure mode is aggregate exhaustion, not one large alloc.
+// failing with MBEDTLS_ERR_X509_ALLOC_FAILED (-0x2880). Total free heap is the primary
+// gate, with a modest largest-block floor to avoid entering TLS on a badly fragmented heap.
 constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+constexpr uint32_t MIN_MAX_ALLOC_FOR_TLS = 16U * 1024U;
+
+bool hasHeapForTls(const char* action) {
+  return MemoryBudget::hasHeapForOperation("KOSync", action, MIN_HEAP_FOR_TLS, MIN_MAX_ALLOC_FOR_TLS);
+}
 
 #ifdef SIMULATOR
 void addAuthHeaders(HTTPClient& http) {
@@ -222,10 +228,10 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/users/auth";
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  LOG_DBG("KOSync", "Authenticating: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
-  if (freeHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
+  const auto heap = MemoryBudget::snapshot();
+  LOG_DBG("KOSync", "Authenticating: %s (heap: %u free, %u max alloc)", url.c_str(), (unsigned)heap.freeHeap,
+          (unsigned)heap.maxAllocHeap);
+  if (!hasHeapForTls("TLS authentication handshake")) {
     return LOW_MEMORY;
   }
 
@@ -296,10 +302,10 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash;
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  LOG_DBG("KOSync", "Getting progress: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
-  if (freeHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
+  const auto heap = MemoryBudget::snapshot();
+  LOG_DBG("KOSync", "Getting progress: %s (heap: %u free, %u max alloc)", url.c_str(), (unsigned)heap.freeHeap,
+          (unsigned)heap.maxAllocHeap);
+  if (!hasHeapForTls("TLS progress fetch handshake")) {
     return LOW_MEMORY;
   }
 
@@ -407,10 +413,10 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   }
 
   std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress";
-  const uint32_t freeHeap = ESP.getFreeHeap();
-  LOG_DBG("KOSync", "Updating progress: %s (heap: %u)", url.c_str(), (unsigned)freeHeap);
-  if (freeHeap < MIN_HEAP_FOR_TLS) {
-    LOG_ERR("KOSync", "Insufficient heap for TLS handshake: %u bytes free (need %u)", freeHeap, MIN_HEAP_FOR_TLS);
+  const auto heap = MemoryBudget::snapshot();
+  LOG_DBG("KOSync", "Updating progress: %s (heap: %u free, %u max alloc)", url.c_str(), (unsigned)heap.freeHeap,
+          (unsigned)heap.maxAllocHeap);
+  if (!hasHeapForTls("TLS progress update handshake")) {
     return LOW_MEMORY;
   }
 

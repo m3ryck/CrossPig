@@ -7,6 +7,7 @@
 ### Changed
 
 ### Fixed
+- Image conversion, ZIP extraction, sync, update, and firmware flashing paths now check the largest allocatable heap block before starting large transient work, avoiding late failures on fragmented memory.
 - Long-press reader shortcuts that open another screen no longer close or confirm it again when releasing the shortcut button.
 - RoundedRaff's header battery icon and percentage now sit lower to avoid clipping at the top edge.
 - Lyra Carousel now redraws the Home header when restoring cached carousel frames so battery percentage and clock values stay current while navigating between books.

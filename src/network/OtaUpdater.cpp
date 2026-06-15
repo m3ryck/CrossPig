@@ -7,6 +7,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() { return NO_UPDATE; }
 OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback, void*, std::atomic<bool>*) { return NO_UPDATE; }
 #else
 #include <Logging.h>
+#include <MemoryBudget.h>
 #include <ReleaseJsonParser.h>
 
 #include <cstring>
@@ -34,6 +35,9 @@ constexpr char firmwareAssetName[] = "firmware.bin";
 
 constexpr char binSuffix[] = ".bin";
 constexpr size_t VERSION_SEGMENT_COUNT = 4;
+constexpr uint32_t MIN_HEAP_FOR_OTA_CHECK = 72U * 1024U;
+constexpr uint32_t MIN_HEAP_FOR_OTA_INSTALL = 96U * 1024U;
+constexpr uint32_t MIN_MAX_ALLOC_FOR_OTA_TLS = 16U * 1024U;
 
 struct ParsedVersion {
   int segments[VERSION_SEGMENT_COUNT] = {0, 0, 0, 0};
@@ -124,6 +128,10 @@ bool isMatchingFirmwareAssetName(const char* assetName) {
   return endsWith(assetName, binSuffix);
 }
 
+bool hasHeapForOta(const char* action, const uint32_t minFree) {
+  return MemoryBudget::hasHeapForOperation("OTA", action, minFree, MIN_MAX_ALLOC_FOR_OTA_TLS);
+}
+
 /*
  * When esp_crt_bundle.h included, it is pointing wrong header file
  * which is something under WifiClientSecure because of our framework based on arduno platform.
@@ -185,6 +193,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   totalBytesReceived = 0;
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSINK_VERSION);
+
+  if (!hasHeapForOta("release check TLS session", MIN_HEAP_FOR_OTA_CHECK)) {
+    return OOM_ERROR;
+  }
 
   esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
   if (!client_handle) {
@@ -289,6 +301,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   };
 
   WifiPowerSaveGuard wifiPowerSaveGuard;
+
+  if (!hasHeapForOta("firmware install TLS session", MIN_HEAP_FOR_OTA_INSTALL)) {
+    return OOM_ERROR;
+  }
 
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {

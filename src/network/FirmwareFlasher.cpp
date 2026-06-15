@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
+#include <MemoryBudget.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>
@@ -120,7 +122,11 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   const uint8_t segCount = header[1];
   const bool hashAppended = header[23] != 0;
 
-  auto buf = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[CHUNK]);
+  if (!MemoryBudget::hasHeapForTransientAlloc("FLASH", "firmware validation buffer", CHUNK, 8U * 1024U)) {
+    file.close();
+    return Result::OOM;
+  }
+  auto buf = makeUniqueNoThrow<uint8_t[]>(CHUNK);
   if (!buf) {
     file.close();
     return Result::OOM;
@@ -258,7 +264,11 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
   LOG_INF("FLASH", "src=%s size=%u dest=%s @0x%x partsize=%u", sdPath, static_cast<unsigned>(firmwareSize), dest->label,
           static_cast<unsigned>(dest->address), static_cast<unsigned>(dest->size));
 
-  auto buffer = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[CHUNK]);
+  if (!MemoryBudget::hasHeapForTransientAlloc("FLASH", "firmware flash buffer", CHUNK, 8U * 1024U)) {
+    file.close();
+    return Result::OOM;
+  }
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(CHUNK);
   if (!buffer) {
     LOG_ERR("FLASH", "OOM");
     file.close();
