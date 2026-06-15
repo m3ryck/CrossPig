@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -52,3 +54,62 @@ struct [[nodiscard]] ScopedCleanup final {
 
 template <typename F>
 ScopedCleanup(F) -> ScopedCleanup<F>;
+
+// Heap-backed bump allocator for short-lived scratch buffers that all share one
+// lifetime. Allocate one bounded block, hand out aligned slices, then reset or
+// destroy the arena all at once. It intentionally does not run destructors; use
+// it only for trivially destructible scratch data such as byte or integer arrays.
+class ScratchArena final {
+ public:
+  explicit ScratchArena(const size_t capacityBytes)
+      : storage_(makeUniqueNoThrow<uint8_t[]>(capacityBytes)), capacity_(storage_ ? capacityBytes : 0), used_(0) {}
+
+  ScratchArena(const ScratchArena&) = delete;
+  ScratchArena& operator=(const ScratchArena&) = delete;
+  ScratchArena(ScratchArena&&) = delete;
+  ScratchArena& operator=(ScratchArena&&) = delete;
+
+  bool available() const { return storage_ != nullptr; }
+  size_t capacity() const { return capacity_; }
+  size_t used() const { return used_; }
+  size_t remaining() const { return capacity_ - used_; }
+
+  void reset() { used_ = 0; }
+  size_t mark() const { return used_; }
+  void rewind(const size_t mark) {
+    if (mark <= used_) used_ = mark;
+  }
+
+  void* allocateBytes(const size_t size, const size_t alignment = alignof(std::max_align_t)) {
+    if (!storage_ || size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) return nullptr;
+
+    const uintptr_t base = reinterpret_cast<uintptr_t>(storage_.get());
+    const uintptr_t current = base + used_;
+    const uintptr_t aligned = (current + alignment - 1) & ~(static_cast<uintptr_t>(alignment) - 1);
+    const size_t padding = static_cast<size_t>(aligned - current);
+
+    if (padding > remaining() || size > remaining() - padding) return nullptr;
+
+    used_ += padding + size;
+    return reinterpret_cast<void*>(aligned);
+  }
+
+  template <typename T>
+  T* allocateArray(const size_t count) {
+    static_assert(std::is_trivially_destructible_v<T>, "ScratchArena only supports trivially destructible data");
+    if (count > SIZE_MAX / sizeof(T)) return nullptr;
+    return static_cast<T*>(allocateBytes(count * sizeof(T), alignof(T)));
+  }
+
+  template <typename T>
+  T* allocateZeroedArray(const size_t count) {
+    T* ptr = allocateArray<T>(count);
+    if (ptr) memset(ptr, 0, count * sizeof(T));
+    return ptr;
+  }
+
+ private:
+  std::unique_ptr<uint8_t[]> storage_;
+  size_t capacity_;
+  size_t used_;
+};

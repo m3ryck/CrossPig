@@ -215,15 +215,15 @@ struct BmpConvertCtx {
 
   // Accumulates one MCU row (up to MAX_MCU_HEIGHT source rows × srcWidth pixels)
   // Filled column-by-column as JPEGDEC callbacks arrive for the same MCU row
-  std::unique_ptr<uint8_t[]> mcuBuf;
+  uint8_t* mcuBuf;
 
   // Y-axis area averaging accumulators (needsScaling only)
   int currentOutY;
   uint32_t nextOutY_srcStart;  // 16.16 fixed-point boundary for the next output row
-  std::unique_ptr<uint32_t[]> rowAccum;
-  std::unique_ptr<uint32_t[]> rowCount;
+  uint32_t* rowAccum;
+  uint32_t* rowCount;
 
-  std::unique_ptr<uint8_t[]> bmpRow;
+  uint8_t* bmpRow;
 
   std::unique_ptr<AtkinsonDitherer> atkinsonDitherer;
   std::unique_ptr<FloydSteinbergDitherer> fsDitherer;
@@ -318,9 +318,20 @@ static bool shouldContainAdaptive(const int srcWidth, const int srcHeight, const
   return diff * 100 > targetScaledToSourceHeight * kAspectTolerancePercent;
 }
 
+static size_t jpegScratchArenaBytes(const int effectiveSrcW, const int bytesPerRow, const bool needsScaling,
+                                    const int outWidth) {
+  size_t bytes =
+      static_cast<size_t>(MAX_MCU_HEIGHT) * static_cast<size_t>(effectiveSrcW) + static_cast<size_t>(bytesPerRow);
+  if (needsScaling) {
+    bytes += 2U * static_cast<size_t>(outWidth) * sizeof(uint32_t);
+    bytes += 2U * (alignof(uint32_t) - 1U);  // worst-case padding for aligned uint32_t slices
+  }
+  return bytes;
+}
+
 // Write a fully-assembled output row (grayscale bytes, length outWidth) to BMP
 static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) {
-  memset(ctx->bmpRow.get(), 0, ctx->bytesPerRow);
+  memset(ctx->bmpRow, 0, ctx->bytesPerRow);
 
   if (USE_8BIT_OUTPUT && !ctx->oneBit) {
     for (int x = 0; x < ctx->outWidth; x++) {
@@ -352,12 +363,12 @@ static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) 
       ctx->fsDitherer->nextRow();
   }
 
-  ctx->bmpOut->write(ctx->bmpRow.get(), ctx->bytesPerRow);
+  ctx->bmpOut->write(ctx->bmpRow, ctx->bytesPerRow);
 }
 
 // Flush one scaled output row from Y-axis accumulators and advance currentOutY
 static void flushScaledRow(BmpConvertCtx* ctx) {
-  memset(ctx->bmpRow.get(), 0, ctx->bytesPerRow);
+  memset(ctx->bmpRow, 0, ctx->bytesPerRow);
 
   if (USE_8BIT_OUTPUT && !ctx->oneBit) {
     for (int x = 0; x < ctx->outWidth; x++) {
@@ -391,7 +402,7 @@ static void flushScaledRow(BmpConvertCtx* ctx) {
       ctx->fsDitherer->nextRow();
   }
 
-  ctx->bmpOut->write(ctx->bmpRow.get(), ctx->bytesPerRow);
+  ctx->bmpOut->write(ctx->bmpRow, ctx->bytesPerRow);
   ctx->currentOutY++;
 }
 
@@ -414,7 +425,7 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   for (int r = 0; r < blockH && r < MAX_MCU_HEIGHT; r++) {
     const int copyW = (blockX + validW <= ctx->srcWidth) ? validW : (ctx->srcWidth - blockX);
     if (copyW <= 0) continue;
-    memcpy(ctx->mcuBuf.get() + r * ctx->srcWidth + blockX, pixels + r * stride, copyW);
+    memcpy(ctx->mcuBuf + r * ctx->srcWidth + blockX, pixels + r * stride, copyW);
   }
 
   // Wait for the last MCU column before processing any rows
@@ -425,7 +436,7 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   const int safeEndRow = blockY + std::min(blockH, MAX_MCU_HEIGHT);
 
   for (int y = blockY; y < safeEndRow && y < ctx->srcHeight; y++) {
-    const uint8_t* srcRow = ctx->mcuBuf.get() + (y - blockY) * ctx->srcWidth;
+    const uint8_t* srcRow = ctx->mcuBuf + (y - blockY) * ctx->srcWidth;
 
     if (!ctx->needsScaling) {
       // 1:1 — outWidth == srcWidth, write directly
@@ -462,8 +473,8 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
         ctx->nextOutY_srcStart = static_cast<uint32_t>(static_cast<uint64_t>(ctx->srcYOffset_fp) +
                                                        static_cast<uint64_t>(ctx->currentOutY + 1) * ctx->scaleY_fp);
         if (srcY_fp >= ctx->nextOutY_srcStart) continue;
-        memset(ctx->rowAccum.get(), 0, ctx->outWidth * sizeof(uint32_t));
-        memset(ctx->rowCount.get(), 0, ctx->outWidth * sizeof(uint32_t));
+        memset(ctx->rowAccum, 0, ctx->outWidth * sizeof(uint32_t));
+        memset(ctx->rowCount, 0, ctx->outWidth * sizeof(uint32_t));
       }
     }
   }
@@ -600,25 +611,31 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   ctx.srcYOffset_fp = geometry.srcYOffset_fp;
   ctx.error = false;
 
-  // MCU row buffer: MAX_MCU_HEIGHT rows × ctx.srcWidth columns of grayscale.
-  ctx.mcuBuf = makeUniqueNoThrow<uint8_t[]>(MAX_MCU_HEIGHT * effectiveSrcW);
+  const size_t scratchBytes = jpegScratchArenaBytes(effectiveSrcW, bytesPerRow, needsScaling, outWidth);
+  // Heap-backed arena because these JPEG scratch buffers can exceed the small task stack and all die after decode.
+  ScratchArena scratchArena(scratchBytes);
+  if (!scratchArena.available()) {
+    LOG_ERR("JPG", "OOM: JPEG scratch arena (%u bytes)", static_cast<unsigned>(scratchBytes));
+    return false;
+  }
+
+  ctx.mcuBuf = scratchArena.allocateZeroedArray<uint8_t>(static_cast<size_t>(MAX_MCU_HEIGHT) * effectiveSrcW);
   if (!ctx.mcuBuf) {
     LOG_ERR("JPG", "OOM: MCU buffer (%d bytes)", MAX_MCU_HEIGHT * effectiveSrcW);
     return false;
   }
-  memset(ctx.mcuBuf.get(), 0, MAX_MCU_HEIGHT * effectiveSrcW);
 
-  ctx.bmpRow = makeUniqueNoThrow<uint8_t[]>(bytesPerRow);
+  ctx.bmpRow = scratchArena.allocateArray<uint8_t>(bytesPerRow);
   if (!ctx.bmpRow) {
-    LOG_ERR("JPG", "OOM: BMP row buffer");
+    LOG_ERR("JPG", "OOM: BMP row buffer (%d bytes)", bytesPerRow);
     return false;
   }
 
   if (needsScaling) {
-    ctx.rowAccum = makeUniqueNoThrow<uint32_t[]>(outWidth);
-    ctx.rowCount = makeUniqueNoThrow<uint32_t[]>(outWidth);
+    ctx.rowAccum = scratchArena.allocateZeroedArray<uint32_t>(outWidth);
+    ctx.rowCount = scratchArena.allocateZeroedArray<uint32_t>(outWidth);
     if (!ctx.rowAccum || !ctx.rowCount) {
-      LOG_ERR("JPG", "OOM: scaling buffers");
+      LOG_ERR("JPG", "OOM: scaling buffers (%u bytes)", static_cast<unsigned>(2U * outWidth * sizeof(uint32_t)));
       return false;
     }
     ctx.nextOutY_srcStart = geometry.srcYOffset_fp + geometry.scaleY_fp;
