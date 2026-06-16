@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Arena allocator (`lib/Memory/Arena.h`) for burst-then-discard allocation patterns - reduces heap fragmentation during EPUB parsing and page layout over long reading sessions.
 
 ### Changed
 
