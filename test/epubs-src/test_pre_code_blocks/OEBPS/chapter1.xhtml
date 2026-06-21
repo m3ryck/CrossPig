@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+  <title>Inline Code</title>
+  <link rel="stylesheet" type="text/css" href="styles/test.css"/>
+</head>
+<body>
+  <h1>Inline Code</h1>
+  <p class="note">PASS when inline code remains in the surrounding paragraph flow and normal spaces collapse.</p>
+
+  <p>Plain inline code: call <code>renderBlock(style, viewportWidth)</code> before adding the next page element.</p>
+  <p>Entity handling inside code: <code>if (count &lt; max &amp;&amp; status != "done") return count + 1;</code></p>
+  <p>Inline code with many source spaces should read as ordinary text here: <code>alpha      beta      gamma</code>.</p>
+  <p>Styled inline code should preserve only its requested whitespace:
+    <code class="preserve-inline">A  B    C</code> should show visible gaps between letters.</p>
+  <p>A long inline token should wrap safely instead of pushing following text off screen:
+    <code>very_long_inline_code_identifier_that_should_wrap_without_hyphenation_artifacts_or_overlap</code> then this sentence continues.</p>
+</body>
+</html>

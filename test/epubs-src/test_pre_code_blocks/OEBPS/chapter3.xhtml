@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+  <title>CSS White Space Modes</title>
+  <link rel="stylesheet" type="text/css" href="styles/test.css"/>
+</head>
+<body>
+  <h1>CSS White Space Modes</h1>
+  <p class="note">PASS when each paragraph follows the white-space rule named in its heading.</p>
+
+  <h2>Normal</h2>
+  <p class="normal-space small-gap">Normal mode collapses      runs of spaces and turns
+newlines into ordinary word boundaries.</p>
+
+  <h2>Pre Wrap</h2>
+  <p class="prewrap small-gap">Pre-wrap keeps      runs of spaces.
+    This line starts with four spaces.
+
+    There is one blank line above this line.
+	Tabs expand into visible spacing.</p>
+
+  <h2>Pre Line</h2>
+  <p class="preline small-gap">Pre-line collapses      space runs but keeps
+this line break and the next blank line.
+
+This line follows the preserved blank line.</p>
+
+  <h2>Nested Code</h2>
+  <p class="prewrap small-gap">A pre-wrap paragraph can include <code>inline_code()</code> without losing
+    indentation on the following line.</p>
+</body>
+</html>

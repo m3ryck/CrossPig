@@ -1,0 +1,45 @@
+body {
+  font-family: serif;
+  line-height: 1.2;
+}
+
+h1,
+h2 {
+  text-align: center;
+}
+
+.note {
+  font-size: 0.9em;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+code {
+  white-space: normal;
+}
+
+pre,
+.prewrap {
+  white-space: pre-wrap;
+  text-align: left;
+  text-indent: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.preline {
+  white-space: pre-line;
+}
+
+.normal-space {
+  white-space: normal;
+}
+
+.preserve-inline {
+  white-space: pre-wrap;
+}
+
+.small-gap {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
