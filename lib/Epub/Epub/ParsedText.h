@@ -19,6 +19,7 @@ class ParsedText {
   std::vector<bool> wordNoSpaceBefore;   // true = may break before token, but no synthetic space when joined
   std::vector<bool> wordIsBionicSuffix;  // true = token is the regular tail of a bionic bold-prefix split
   std::vector<bool> wordIsGuideDot;      // true = token is a guide dot (U+00B7) inserted between words
+  std::vector<bool> wordForcedBreakAfter;
   std::vector<uint8_t> wordBackgroundBlack;
   bool extraParagraphSpacing;
   bool forceParagraphIndents;
@@ -69,7 +70,9 @@ class ParsedText {
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
-               bool backgroundBlack = false);
+               bool backgroundBlack = false, bool noSpaceBefore = false);
+  void addPreservedSpace(EpdFontFamily::Style fontStyle, bool attachToPrevious, bool backgroundBlack = false);
+  void addHardLineBreak(EpdFontFamily::Style fontStyle, bool backgroundBlack = false);
   void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
   BlockStyle& getBlockStyle() { return blockStyle; }
   size_t size() const { return words.size(); }

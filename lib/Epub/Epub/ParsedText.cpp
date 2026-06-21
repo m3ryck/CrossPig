@@ -268,7 +268,7 @@ bool isWordCharacter(uint32_t cp) {
 }  // namespace
 
 void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle, const bool underline,
-                         const bool attachToPrevious, const bool backgroundBlack) {
+                         const bool attachToPrevious, const bool backgroundBlack, const bool noSpaceBefore) {
   if (word.empty()) return;
 
   // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
@@ -294,11 +294,12 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordNoSpaceBefore.push_back(noSpaceBefore);
     wordIsBionicSuffix.push_back(isBionicSuffix);
     wordIsGuideDot.push_back(isGuideDot);
+    wordForcedBreakAfter.push_back(false);
     wordBackgroundBlack.push_back(isGuideDot ? false : backgroundBlack);
   };
 
   bool effectiveAttachToPrevious = attachToPrevious;
-  bool effectiveNoSpaceBefore = false;
+  bool effectiveNoSpaceBefore = noSpaceBefore;
   if (attachToPrevious && !words.empty() &&
       hasCjkBreakOpportunityBetween(lastCodepoint(words.back()), firstCodepoint(word))) {
     effectiveAttachToPrevious = false;
@@ -372,6 +373,7 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     wordNoSpaceBefore.reserve(newCapacity);
     wordIsBionicSuffix.reserve(newCapacity);
     wordIsGuideDot.reserve(newCapacity);
+    wordForcedBreakAfter.reserve(newCapacity);
     wordBackgroundBlack.reserve(newCapacity);
   }
 
@@ -481,6 +483,29 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
   }
 }
 
+void ParsedText::addPreservedSpace(const EpdFontFamily::Style fontStyle, const bool attachToPrevious,
+                                   const bool backgroundBlack) {
+  words.push_back(" ");
+  wordStyles.push_back(fontStyle);
+  wordContinues.push_back(attachToPrevious);
+  wordNoSpaceBefore.push_back(!attachToPrevious);
+  wordIsBionicSuffix.push_back(false);
+  wordIsGuideDot.push_back(false);
+  wordForcedBreakAfter.push_back(false);
+  wordBackgroundBlack.push_back(backgroundBlack);
+}
+
+void ParsedText::addHardLineBreak(const EpdFontFamily::Style fontStyle, const bool backgroundBlack) {
+  words.push_back("\n");
+  wordStyles.push_back(fontStyle);
+  wordContinues.push_back(true);
+  wordNoSpaceBefore.push_back(true);
+  wordIsBionicSuffix.push_back(false);
+  wordIsGuideDot.push_back(false);
+  wordForcedBreakAfter.push_back(true);
+  wordBackgroundBlack.push_back(backgroundBlack);
+}
+
 int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
   const bool naturalAlign =
       blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::None ||
@@ -539,7 +564,9 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   auto wordWidths = calculateWordWidths(renderer, fontId);
 
   std::vector<size_t> lineBreakIndices;
-  if (hyphenationEnabled) {
+  const bool preserveSpaces =
+      blockStyle.whiteSpace == CssWhiteSpace::Pre || blockStyle.whiteSpace == CssWhiteSpace::PreWrap;
+  if (hyphenationEnabled && !preserveSpaces) {
     // Use greedy layout that can split words mid-loop when a hyphenated prefix fits.
     lineBreakIndices =
         computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
@@ -562,6 +589,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + consumed);
     wordIsBionicSuffix.erase(wordIsBionicSuffix.begin(), wordIsBionicSuffix.begin() + consumed);
     wordIsGuideDot.erase(wordIsGuideDot.begin(), wordIsGuideDot.begin() + consumed);
+    wordForcedBreakAfter.erase(wordForcedBreakAfter.begin(), wordForcedBreakAfter.begin() + consumed);
     wordBackgroundBlack.erase(wordBackgroundBlack.begin(), wordBackgroundBlack.begin() + consumed);
   }
 }
@@ -571,7 +599,7 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
   wordWidths.reserve(words.size());
 
   for (size_t i = 0; i < words.size(); ++i) {
-    wordWidths.push_back(measureWordWidth(renderer, fontId, words[i], wordStyles[i]));
+    wordWidths.push_back(wordForcedBreakAfter[i] ? 0 : measureWordWidth(renderer, fontId, words[i], wordStyles[i]));
   }
 
   return wordWidths;
@@ -582,6 +610,63 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
                                                   std::vector<bool>& noSpaceBeforeVec) {
   if (words.empty()) {
     return {};
+  }
+
+  if (std::any_of(wordForcedBreakAfter.begin(), wordForcedBreakAfter.end(), [](const bool forced) { return forced; })) {
+    std::vector<size_t> lineBreakIndices;
+    size_t lineStart = 0;
+    size_t currentIndex = 0;
+    bool isFirstLine = true;
+
+    while (currentIndex < wordWidths.size()) {
+      int lineWidth = 0;
+      const int firstLineIndent = resolveFirstLineIndent(isFirstLine, renderer, fontId);
+      const int effectivePageWidth = pageWidth - firstLineIndent;
+
+      while (currentIndex < wordWidths.size()) {
+        const bool isFirstWord = currentIndex == lineStart;
+        int spacing = 0;
+        if (!isFirstWord && noSpaceBeforeVec[currentIndex]) {
+          spacing = 0;
+        } else if (!isFirstWord && !continuesVec[currentIndex]) {
+          spacing = renderer.getSpaceAdvance(fontId, lastCodepoint(words[currentIndex - 1]),
+                                             firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
+        } else if (!isFirstWord && continuesVec[currentIndex]) {
+          spacing = renderer.getKerning(fontId, lastCodepoint(words[currentIndex - 1]),
+                                        firstCodepoint(words[currentIndex]), wordStyles[currentIndex - 1]);
+        }
+
+        if (!wordForcedBreakAfter[currentIndex] &&
+            lineWidth + spacing + wordWidths[currentIndex] > effectivePageWidth) {
+          const int availableWidth = effectivePageWidth - lineWidth - spacing;
+          if (isFirstWord && availableWidth > 0 &&
+              hyphenateWordAtIndex(currentIndex, availableWidth, renderer, fontId, wordWidths,
+                                   /*allowFallbackBreaks=*/true)) {
+            lineWidth += spacing + wordWidths[currentIndex];
+            ++currentIndex;
+          } else if (isFirstWord) {
+            ++currentIndex;
+          }
+          break;
+        }
+
+        lineWidth += spacing + wordWidths[currentIndex];
+        const bool forcedBreak = wordForcedBreakAfter[currentIndex];
+        ++currentIndex;
+        if (forcedBreak) {
+          break;
+        }
+      }
+
+      if (currentIndex <= lineStart) {
+        currentIndex = lineStart + 1;
+      }
+      lineBreakIndices.push_back(currentIndex);
+      lineStart = currentIndex;
+      isFirstLine = false;
+    }
+
+    return lineBreakIndices;
   }
 
   auto nextTokenAttaches = [&](const size_t index, const size_t totalWordCount) {
@@ -837,6 +922,8 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   // The hyphen remainder is neither a bionic suffix nor a guide dot - it starts fresh on the next line.
   wordIsBionicSuffix.insert(wordIsBionicSuffix.begin() + wordIndex + 1, false);
   wordIsGuideDot.insert(wordIsGuideDot.begin() + wordIndex + 1, false);
+  wordForcedBreakAfter.insert(wordForcedBreakAfter.begin() + wordIndex + 1, wordForcedBreakAfter[wordIndex]);
+  wordForcedBreakAfter[wordIndex] = false;
 
   // Continuation flag handling after splitting a word into prefix + remainder.
   //
@@ -912,6 +999,8 @@ bool ParsedText::splitPathologicalTokenAtIndex(const size_t wordIndex, const int
   wordBackgroundBlack.insert(wordBackgroundBlack.begin() + wordIndex + 1, wordBackgroundBlack[wordIndex]);
   wordIsBionicSuffix.insert(wordIsBionicSuffix.begin() + wordIndex + 1, false);
   wordIsGuideDot.insert(wordIsGuideDot.begin() + wordIndex + 1, false);
+  wordForcedBreakAfter.insert(wordForcedBreakAfter.begin() + wordIndex + 1, wordForcedBreakAfter[wordIndex]);
+  wordForcedBreakAfter[wordIndex] = false;
   wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
   wordNoSpaceBefore.insert(wordNoSpaceBefore.begin() + wordIndex + 1, false);
 
@@ -950,16 +1039,20 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   for (size_t i = 0; i < lineWordCount; ++i) {
     const size_t sourceIndex = lastBreakAt + i;
     std::string word = std::move(words[sourceIndex]);
+    const bool isHardBreakToken = wordForcedBreakAfter[sourceIndex];
     if (containsSoftHyphen(word)) {
       stripSoftHyphensInPlace(word);
     }
-    lineWords.push_back(std::move(word));
-    lineWordStyles.push_back(wordStyles[sourceIndex]);
-    lineWordWidths.push_back(wordWidths[sourceIndex]);
-    lineBionicSuffix.push_back(wordIsBionicSuffix[sourceIndex]);
-    lineGuideDot.push_back(wordIsGuideDot[sourceIndex]);
-    lineBackgroundBlack.push_back(wordBackgroundBlack[sourceIndex]);
+    if (!isHardBreakToken) {
+      lineWords.push_back(std::move(word));
+      lineWordStyles.push_back(wordStyles[sourceIndex]);
+      lineWordWidths.push_back(wordWidths[sourceIndex]);
+      lineBionicSuffix.push_back(wordIsBionicSuffix[sourceIndex]);
+      lineGuideDot.push_back(wordIsGuideDot[sourceIndex]);
+      lineBackgroundBlack.push_back(wordBackgroundBlack[sourceIndex]);
+    }
   }
+  const size_t emittedWordCount = lineWords.size();
 
   // Calculate total word width for this line, count actual word gaps,
   // and accumulate total natural gap widths (including space kerning adjustments).
@@ -967,7 +1060,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   size_t actualGapCount = 0;
   int totalNaturalGaps = 0;
 
-  for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
+  for (size_t wordIdx = 0; wordIdx < emittedWordCount; wordIdx++) {
     lineWordWidthSum += lineWordWidths[wordIdx];
     // Count gaps: each word after the first creates a gap, unless it's a continuation
     if (wordIdx > 0 && noSpaceBeforeVec[lastBreakAt + wordIdx]) {
@@ -1005,13 +1098,13 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                : 0;
 
   visualOrderScratch.clear();
-  visualOrderScratch.reserve(lineWordCount);
+  visualOrderScratch.reserve(emittedWordCount);
   const bool shouldResolveVisualOrder = blockStyle.isRtl || hasRtlWord;
   const bool willReorder =
       shouldResolveVisualOrder && BidiUtils::computeVisualWordOrder(lineWords, blockStyle.isRtl, visualOrderScratch);
 
   std::vector<int16_t> lineXPos;
-  lineXPos.reserve(lineWordCount);
+  lineXPos.reserve(emittedWordCount);
 
   if (willReorder) {
     reorderedWordsScratch.clear();
@@ -1159,11 +1252,11 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       }
       // For Right and Justify, start from right edge (xpos = effectivePageWidth)
 
-      for (size_t wordIdx = 0; wordIdx < lineWordCount; ++wordIdx) {
+      for (size_t wordIdx = 0; wordIdx < emittedWordCount; ++wordIdx) {
         xpos -= lineWordWidths[wordIdx];
         lineXPos.push_back(static_cast<int16_t>(xpos));
 
-        const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
+        const bool nextIsContinuation = wordIdx + 1 < emittedWordCount && continuesVec[lastBreakAt + wordIdx + 1];
         if (nextIsContinuation) {
           int advance = renderer.getKerning(fontId, lastCodepoint(lineWords[wordIdx]),
                                             firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
@@ -1176,7 +1269,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         } else {
           int gap = 0;
           bool nextNoSpace = false;
-          if (wordIdx + 1 < lineWordCount) {
+          if (wordIdx + 1 < emittedWordCount) {
             nextNoSpace = noSpaceBeforeVec[lastBreakAt + wordIdx + 1];
             gap = nextNoSpace
                       ? 0
@@ -1184,8 +1277,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                                  firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
           const bool nextIsClosing =
-              wordIdx + 1 < lineWordCount && isClosingPunctuationForJustify(firstCodepoint(lineWords[wordIdx + 1]));
-          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
+              wordIdx + 1 < emittedWordCount && isClosingPunctuationForJustify(firstCodepoint(lineWords[wordIdx + 1]));
+          if (wordIdx + 1 < emittedWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
               !nextIsClosing) {
             gap += justifyExtra;
           }
@@ -1201,10 +1294,10 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         xpos = (effectivePageWidth - lineWordWidthSum - totalNaturalGaps) / 2;
       }
 
-      for (size_t wordIdx = 0; wordIdx < lineWordCount; ++wordIdx) {
+      for (size_t wordIdx = 0; wordIdx < emittedWordCount; ++wordIdx) {
         lineXPos.push_back(static_cast<int16_t>(xpos));
 
-        const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
+        const bool nextIsContinuation = wordIdx + 1 < emittedWordCount && continuesVec[lastBreakAt + wordIdx + 1];
         if (nextIsContinuation) {
           int advance = lineWordWidths[wordIdx];
           advance += renderer.getKerning(fontId, lastCodepoint(lineWords[wordIdx]),
@@ -1220,7 +1313,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
         } else {
           int gap = 0;
           bool nextNoSpace = false;
-          if (wordIdx + 1 < lineWordCount) {
+          if (wordIdx + 1 < emittedWordCount) {
             nextNoSpace = noSpaceBeforeVec[lastBreakAt + wordIdx + 1];
             gap = nextNoSpace
                       ? 0
@@ -1228,8 +1321,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
                                                  firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
           }
           const bool nextIsClosing =
-              wordIdx + 1 < lineWordCount && isClosingPunctuationForJustify(firstCodepoint(lineWords[wordIdx + 1]));
-          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
+              wordIdx + 1 < emittedWordCount && isClosingPunctuationForJustify(firstCodepoint(lineWords[wordIdx + 1]));
+          if (wordIdx + 1 < emittedWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine &&
               !nextIsClosing) {
             gap += justifyExtra;
           }
@@ -1241,7 +1334,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   bool lineHasBionicSplit = false;
   bool lineHasGuideDot = false;
-  for (size_t i = 0; i < lineWordCount; i++) {
+  for (size_t i = 0; i < emittedWordCount; i++) {
     if (lineBionicSuffix[i]) {
       lineHasBionicSplit = true;
     }
@@ -1264,19 +1357,19 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   std::vector<uint16_t> outSuffixX;
   std::vector<uint16_t> outGuideDotXOffset;
   std::vector<uint8_t> outBackgroundBlack;
-  outWords.reserve(lineWordCount);
-  outXPos.reserve(lineWordCount);
-  outStyles.reserve(lineWordCount);
+  outWords.reserve(emittedWordCount);
+  outXPos.reserve(emittedWordCount);
+  outStyles.reserve(emittedWordCount);
   if (lineHasBionicSplit) {
-    outBoundaries.reserve(lineWordCount);
-    outSuffixX.reserve(lineWordCount);
+    outBoundaries.reserve(emittedWordCount);
+    outSuffixX.reserve(emittedWordCount);
   }
   if (lineHasGuideDot) {
-    outGuideDotXOffset.reserve(lineWordCount);
+    outGuideDotXOffset.reserve(emittedWordCount);
   }
-  outBackgroundBlack.reserve(lineWordCount);
+  outBackgroundBlack.reserve(emittedWordCount);
 
-  for (size_t i = 0; i < lineWordCount; i++) {
+  for (size_t i = 0; i < emittedWordCount; i++) {
     if (lineBionicSuffix[i] && !outWords.empty()) {
       // Bionic suffix: merge string into the preceding bold-prefix entry.
       outWords.back() += lineWords[i];
@@ -1291,7 +1384,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
       // Normal word: check for a following bionic suffix to record the byte boundary.
       uint8_t boundary = 0;
       uint16_t suffixX = 0;
-      if (i + 1 < lineWordCount && lineBionicSuffix[i + 1]) {
+      if (i + 1 < emittedWordCount && lineBionicSuffix[i + 1]) {
         boundary = static_cast<uint8_t>(std::min(lineWords[i].size(), size_t{255}));
         // Suffix x offset = layout-time advance of the bold prefix, already known from xpos table.
         const int suffixDelta = static_cast<int>(lineXPos[i + 1]) - static_cast<int>(lineXPos[i]);

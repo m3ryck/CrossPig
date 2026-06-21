@@ -46,6 +46,8 @@ class ChapterHtmlSlimParser {
   int partWordBufferIndex = 0;
   uint16_t currentTextRunBytes = 0;
   bool nextWordContinues = false;  // true when next flushed word attaches to previous (inline element boundary)
+  bool nextWordNoSpaceBefore = false;
+  bool previousCharWasCR = false;
   std::unique_ptr<ParsedText> currentTextBlock = nullptr;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
@@ -80,6 +82,8 @@ class ChapterHtmlSlimParser {
     bool hasBackgroundBlack = false, backgroundBlack = false;
     bool hasDirection = false;
     CssTextDirection direction = CssTextDirection::Ltr;
+    bool hasWhiteSpace = false;
+    CssWhiteSpace whiteSpace = CssWhiteSpace::Normal;
     bool hasSup = false, sup = false;
     bool hasSub = false, sub = false;
   };
@@ -93,6 +97,8 @@ class ChapterHtmlSlimParser {
   bool effectiveBackgroundBlack = false;
   bool effectiveDirectionDefined = false;
   CssTextDirection effectiveDirection = CssTextDirection::Ltr;
+  bool effectiveWhiteSpaceDefined = false;
+  CssWhiteSpace effectiveWhiteSpace = CssWhiteSpace::Normal;
   bool effectiveSup = false;
   bool effectiveSub = false;
 

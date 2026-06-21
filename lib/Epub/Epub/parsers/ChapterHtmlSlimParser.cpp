@@ -40,7 +40,7 @@ constexpr uint32_t PAGE_ELEMENT_RESERVE_MIN_MAX_ALLOC = 1024;
 constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 
 static constexpr const char* const HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
-static constexpr const char* const BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
+static constexpr const char* const BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote", "pre"};
 static constexpr const char* const BOLD_TAGS[] = {"b", "strong"};
 static constexpr const char* const ITALIC_TAGS[] = {"i", "em"};
 static constexpr const char* const UNDERLINE_TAGS[] = {"u", "ins"};
@@ -147,6 +147,10 @@ void ChapterHtmlSlimParser::applyDirectionToEntry(StyleStackEntry& entry, const 
     entry.hasDirection = true;
     entry.direction = css.direction;
   }
+  if (css.hasWhiteSpace()) {
+    entry.hasWhiteSpace = true;
+    entry.whiteSpace = css.whiteSpace;
+  }
 }
 
 // Update effective bold/italic/underline based on block style and inline style stack
@@ -162,6 +166,8 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
       honorsPublisherDecorations() && currentCssStyle.hasBackgroundBlack() && currentCssStyle.backgroundBlack;
   effectiveDirectionDefined = currentCssStyle.hasDirection();
   effectiveDirection = currentCssStyle.direction;
+  effectiveWhiteSpaceDefined = currentCssStyle.hasWhiteSpace();
+  effectiveWhiteSpace = currentCssStyle.whiteSpace;
   effectiveSup = currentCssStyle.hasVerticalAlign() && currentCssStyle.verticalAlign == CssVerticalAlign::Super;
   effectiveSub = currentCssStyle.hasVerticalAlign() && currentCssStyle.verticalAlign == CssVerticalAlign::Sub;
 
@@ -186,6 +192,10 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
       effectiveDirectionDefined = true;
       effectiveDirection = entry.direction;
     }
+    if (entry.hasWhiteSpace) {
+      effectiveWhiteSpaceDefined = true;
+      effectiveWhiteSpace = entry.whiteSpace;
+    }
     if (entry.hasSup) {
       effectiveSup = entry.sup;
       if (entry.sup) effectiveSub = false;
@@ -204,6 +214,13 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     } else {
       style.directionDefined = false;
       style.isRtl = false;
+    }
+    if (effectiveWhiteSpaceDefined) {
+      style.whiteSpaceDefined = true;
+      style.whiteSpace = effectiveWhiteSpace;
+    } else {
+      style.whiteSpaceDefined = false;
+      style.whiteSpace = CssWhiteSpace::Normal;
     }
   }
 }
@@ -308,6 +325,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   if (lowMemoryAbort) {
     partWordBufferIndex = 0;
     nextWordContinues = false;
+    nextWordNoSpaceBefore = false;
     return;
   }
 
@@ -340,11 +358,12 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
   currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues,
-                            honorsPublisherDecorations() && effectiveBackgroundBlack);
+                            honorsPublisherDecorations() && effectiveBackgroundBlack, nextWordNoSpaceBefore);
   currentTextRunBytes = static_cast<uint16_t>(
       std::min<size_t>(currentTextRunBytes + static_cast<size_t>(partWordBufferIndex), UINT16_MAX));
   partWordBufferIndex = 0;
   nextWordContinues = false;
+  nextWordNoSpaceBefore = false;
 }
 
 void ChapterHtmlSlimParser::flushLongTextRunIfNeeded() {
@@ -375,6 +394,8 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   }
 
   nextWordContinues = false;  // New block = new paragraph, no continuation
+  nextWordNoSpaceBefore = false;
+  previousCharWasCR = false;
   if (currentTextBlock) {
     // already have a text block running and it is empty - just reuse it
     if (currentTextBlock->isEmpty()) {
@@ -440,6 +461,7 @@ void ChapterHtmlSlimParser::finalizeCurrentTableCell() {
     currentTableCellColSpan = 1;
     wordsExtractedInBlock = 0;
     nextWordContinues = false;
+    nextWordNoSpaceBefore = false;
     return;
   }
 
@@ -475,6 +497,7 @@ void ChapterHtmlSlimParser::finalizeCurrentTableCell() {
   currentTableCellColSpan = 1;
   wordsExtractedInBlock = 0;
   nextWordContinues = false;
+  nextWordNoSpaceBefore = false;
   fallbackCurrentTableBufferIfNeeded("cell complete");
 }
 
@@ -824,6 +847,7 @@ void ChapterHtmlSlimParser::fallbackCurrentTableBufferToParagraphs(const char* r
   auto activeFootnotes = std::move(pendingFootnotes);
   const int activeWordsExtracted = wordsExtractedInBlock;
   const bool activeNextWordContinues = nextWordContinues;
+  const bool activeNextWordNoSpaceBefore = nextWordNoSpaceBefore;
   const bool activeTableCellIsHeader = currentTableCellIsHeader;
   const uint8_t activeTableCellColSpan = currentTableCellColSpan;
 
@@ -834,6 +858,7 @@ void ChapterHtmlSlimParser::fallbackCurrentTableBufferToParagraphs(const char* r
   pendingFootnotes = std::move(activeFootnotes);
   wordsExtractedInBlock = activeWordsExtracted;
   nextWordContinues = activeNextWordContinues;
+  nextWordNoSpaceBefore = activeNextWordNoSpaceBefore;
   currentTableCellIsHeader = activeTableCellIsHeader;
   currentTableCellColSpan = activeTableCellColSpan;
 }
@@ -931,6 +956,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     cssStyle.direction = self->effectiveDirection;
     cssStyle.defined.direction = 1;
   }
+  if (!cssStyle.hasWhiteSpace() && self->effectiveWhiteSpaceDefined) {
+    cssStyle.whiteSpace = self->effectiveWhiteSpace;
+    cssStyle.defined.whiteSpace = 1;
+  }
 
   const char* roleAttr = getAttribute(atts, "role");
   const char* epubTypeAttr = getAttribute(atts, "epub:type");
@@ -1011,6 +1040,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         self->flushPartWordBuffer();
       }
       self->nextWordContinues = false;
+      self->nextWordNoSpaceBefore = false;
       self->inlineStyleStack.pop_back();
       self->updateEffectiveInlineStyle();
 
@@ -1531,8 +1561,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
   const CssTextAlign requestedAlign = static_cast<CssTextAlign>(self->paragraphAlignment);
   auto userAlignmentBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, requestedAlign, self->viewportWidth);
+  if (strcmp(name, "pre") == 0) {
+    userAlignmentBlockStyle.alignment = cssStyle.hasTextAlign() ? cssStyle.textAlign : CssTextAlign::Left;
+    userAlignmentBlockStyle.textAlignDefined = true;
+    userAlignmentBlockStyle.textIndent = 0;
+    userAlignmentBlockStyle.textIndentDefined = true;
+    if (!cssStyle.hasWhiteSpace()) {
+      userAlignmentBlockStyle.whiteSpace = CssWhiteSpace::PreWrap;
+      userAlignmentBlockStyle.whiteSpaceDefined = true;
+    }
+  }
 
-  if (!self->embeddedStyle || requestedAlign != CssTextAlign::None) {
+  if (strcmp(name, "pre") != 0 && (!self->embeddedStyle || requestedAlign != CssTextAlign::None)) {
     userAlignmentBlockStyle.textAlignDefined = true;
     userAlignmentBlockStyle.alignment = requestedAlign == CssTextAlign::None ? CssTextAlign::Justify : requestedAlign;
   }
@@ -1777,7 +1817,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
     // Handle span and other inline elements for CSS styling
     if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
-        cssStyle.hasBackgroundBlack() || cssStyle.hasVerticalAlign() || cssStyle.hasDirection()) {
+        cssStyle.hasBackgroundBlack() || cssStyle.hasVerticalAlign() || cssStyle.hasDirection() ||
+        cssStyle.hasWhiteSpace()) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -1871,17 +1912,88 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     self->currentFootnote.number[self->currentFootnoteLinkTextLen] = '\0';
   }
 
+  const CssWhiteSpace whiteSpaceMode =
+      self->effectiveWhiteSpaceDefined
+          ? self->effectiveWhiteSpace
+          : (self->currentTextBlock ? self->currentTextBlock->getBlockStyle().whiteSpace : CssWhiteSpace::Normal);
+  const bool preserveSpaces = whiteSpaceMode == CssWhiteSpace::Pre || whiteSpaceMode == CssWhiteSpace::PreWrap;
+  const bool preserveNewlines = preserveSpaces || whiteSpaceMode == CssWhiteSpace::PreLine;
+
+  auto currentFontStyle = [self]() {
+    const bool isBold = self->boldUntilDepth < self->depth || self->effectiveBold;
+    const bool isItalic = self->italicUntilDepth < self->depth || self->effectiveItalic;
+    const bool isUnderline = self->underlineUntilDepth < self->depth || self->effectiveUnderline;
+    const bool isStrikethrough = self->strikethroughUntilDepth < self->depth || self->effectiveStrikethrough;
+
+    EpdFontFamily::Style fontStyle = EpdFontFamily::REGULAR;
+    if (isBold) fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::BOLD);
+    if (isItalic) fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::ITALIC);
+    if (isUnderline) fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::UNDERLINE);
+    if (isStrikethrough) {
+      fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::STRIKETHROUGH);
+    }
+    if (self->effectiveSup) {
+      fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUP);
+    } else if (self->effectiveSub) {
+      fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
+    }
+    return fontStyle;
+  };
+
+  const auto emitPreservedSpace = [&]() {
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
+    self->currentTextBlock->addPreservedSpace(currentFontStyle(), false,
+                                              self->honorsPublisherDecorations() && self->effectiveBackgroundBlack);
+    self->currentTextRunBytes = static_cast<uint16_t>(std::min<size_t>(self->currentTextRunBytes + 1, UINT16_MAX));
+    self->nextWordContinues = false;
+    self->nextWordNoSpaceBefore = true;
+  };
+
+  const auto emitHardLineBreak = [&]() {
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
+    self->currentTextBlock->addHardLineBreak(currentFontStyle(),
+                                             self->honorsPublisherDecorations() && self->effectiveBackgroundBlack);
+    self->currentTextRunBytes = static_cast<uint16_t>(std::min<size_t>(self->currentTextRunBytes + 1, UINT16_MAX));
+    self->nextWordContinues = false;
+    self->nextWordNoSpaceBefore = false;
+  };
+
   for (int i = 0; i < len; i++) {
     if (isWhitespace(s[i])) {
+      if (s[i] == '\n' && self->previousCharWasCR) {
+        self->previousCharWasCR = false;
+        continue;
+      }
+      self->previousCharWasCR = s[i] == '\r';
+
+      if ((s[i] == '\n' || s[i] == '\r') && preserveNewlines) {
+        emitHardLineBreak();
+        continue;
+      }
+
+      if (preserveSpaces) {
+        const int spaceCount = s[i] == '\t' ? 4 : 1;
+        for (int spaceIndex = 0; spaceIndex < spaceCount; ++spaceIndex) {
+          emitPreservedSpace();
+        }
+        continue;
+      }
+
       // Currently looking at whitespace, if there's anything in the partWordBuffer, flush it
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
       }
       // Whitespace is a real word boundary — reset continuation state
       self->nextWordContinues = false;
+      self->nextWordNoSpaceBefore = false;
       // Skip the whitespace char
       continue;
     }
+    self->previousCharWasCR = false;
 
     // Detect U+00A0 (non-breaking space, UTF-8: 0xC2 0xA0) or
     //        U+202F (narrow no-break space, UTF-8: 0xE2 0x80 0xAF).
@@ -2095,10 +2207,12 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   if (self->tableDepth == 1 && (strcmp(name, "td") == 0 || strcmp(name, "th") == 0)) {
     self->finalizeCurrentTableCell();
     self->nextWordContinues = false;
+    self->nextWordNoSpaceBefore = false;
   }
 
   if (self->tableDepth == 1 && (strcmp(name, "tr") == 0)) {
     self->nextWordContinues = false;
+    self->nextWordNoSpaceBefore = false;
   }
 
   if (self->tableDepth == 1 && strcmp(name, "table") == 0) {
@@ -2113,6 +2227,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
                                                  : static_cast<CssTextAlign>(self->paragraphAlignment);
     self->startNewTextBlock(paragraphAlignmentBlockStyle);
     self->nextWordContinues = false;
+    self->nextWordNoSpaceBefore = false;
   }
 
   if (strcmp(name, "li") == 0 && self->pendingListMarkerDepth == self->depth) {

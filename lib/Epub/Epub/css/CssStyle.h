@@ -61,6 +61,9 @@ enum class CssDisplay : uint8_t { Block = 0, None = 1 };
 // Vertical alignment options for inline elements (e.g. superscript/subscript)
 enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
 
+// Whitespace handling for text layout. Pre maps to pre-wrap in v1 so long lines can still fit the viewport.
+enum class CssWhiteSpace : uint8_t { Normal = 0, Pre = 1, PreWrap = 2, PreLine = 3 };
+
 // Bitmask for tracking which properties have been explicitly set
 struct CssPropertyFlags {
   uint32_t textAlign : 1;
@@ -84,6 +87,7 @@ struct CssPropertyFlags {
   uint32_t direction : 1;
   uint32_t pageBreakBefore : 1;
   uint32_t pageBreakAfter : 1;
+  uint32_t whiteSpace : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -106,12 +110,14 @@ struct CssPropertyFlags {
         verticalAlign(0),
         direction(0),
         pageBreakBefore(0),
-        pageBreakAfter(0) {}
+        pageBreakAfter(0),
+        whiteSpace(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || backgroundBlack || verticalAlign || direction || pageBreakBefore || pageBreakAfter;
+           imageWidth || display || backgroundBlack || verticalAlign || direction || pageBreakBefore ||
+           pageBreakAfter || whiteSpace;
   }
 
   void clearAll() {
@@ -119,7 +125,7 @@ struct CssPropertyFlags {
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
     imageHeight = imageWidth = display = backgroundBlack = verticalAlign = direction = 0;
-    pageBreakBefore = pageBreakAfter = 0;
+    pageBreakBefore = pageBreakAfter = whiteSpace = 0;
   }
 };
 
@@ -152,6 +158,7 @@ struct CssStyle {
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
   bool pageBreakBefore = false;
   bool pageBreakAfter = false;
+  CssWhiteSpace whiteSpace = CssWhiteSpace::Normal;
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -242,6 +249,10 @@ struct CssStyle {
       pageBreakAfter = base.pageBreakAfter;
       defined.pageBreakAfter = 1;
     }
+    if (base.hasWhiteSpace()) {
+      whiteSpace = base.whiteSpace;
+      defined.whiteSpace = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -265,6 +276,7 @@ struct CssStyle {
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasPageBreakBefore() const { return defined.pageBreakBefore; }
   [[nodiscard]] bool hasPageBreakAfter() const { return defined.pageBreakAfter; }
+  [[nodiscard]] bool hasWhiteSpace() const { return defined.whiteSpace; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -281,6 +293,7 @@ struct CssStyle {
     verticalAlign = CssVerticalAlign::Baseline;
     pageBreakBefore = false;
     pageBreakAfter = false;
+    whiteSpace = CssWhiteSpace::Normal;
     defined.clearAll();
   }
 };

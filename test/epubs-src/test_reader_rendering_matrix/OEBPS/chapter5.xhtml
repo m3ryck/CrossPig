@@ -28,6 +28,22 @@
   <p class="mono">function sample() {
   return "monospace and preserved spaces";
 }</p>
+  <pre>function preservePre(input) {
+    const normalized = input.trim();
+
+    if (normalized.length &gt; 24) {
+        return normalized.slice(0, 24);
+    }
+	return normalized;
+}</pre>
+  <p>Inline <code>code   keeps normal spacing</code> unless its CSS or parent asks for preserved whitespace.</p>
+  <p class="prewrap">CSS pre-wrap line:
+    leading spaces should remain
+
+    blank line above should remain
+	long_code_line_with_tabs_and_wrapping_should_stay_readable_even_when_it_exceeds_the_viewport_width();</p>
+  <p class="preline">CSS pre-line collapses      space runs but keeps
+newlines between logical lines.</p>
 
   <h2>Bordered Block</h2>
   <p class="bordered">This paragraph has border and padding. If border support is ignored, text should still remain readable and correctly spaced.</p>

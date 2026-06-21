@@ -33,6 +33,8 @@ struct BlockStyle {
   bool directionDefined = false;   // true if direction was explicitly set in CSS/HTML
   bool pageBreakBefore = false;
   bool pageBreakAfter = false;
+  CssWhiteSpace whiteSpace = CssWhiteSpace::Normal;
+  bool whiteSpaceDefined = false;
   // Set when this block was created by a <br> element. Used by startNewTextBlock to inject
   // a full line-height gap when the <br> block stays empty (section-break use case).
   // NOT propagated through getCombinedBlockStyle so it can't leak into sibling blocks.
@@ -99,6 +101,10 @@ struct BlockStyle {
       result.isRtl = isRtl;
       result.directionDefined = true;
     }
+    if (!child.whiteSpaceDefined && whiteSpaceDefined) {
+      result.whiteSpace = whiteSpace;
+      result.whiteSpaceDefined = true;
+    }
     return result;
   }
 
@@ -137,6 +143,10 @@ struct BlockStyle {
     if (cssStyle.hasDirection()) {
       blockStyle.isRtl = cssStyle.direction == CssTextDirection::Rtl;
       blockStyle.directionDefined = true;
+    }
+    if (cssStyle.hasWhiteSpace()) {
+      blockStyle.whiteSpace = cssStyle.whiteSpace;
+      blockStyle.whiteSpaceDefined = true;
     }
     if (cssStyle.hasPageBreakBefore()) {
       blockStyle.pageBreakBefore = cssStyle.pageBreakBefore;

@@ -88,6 +88,15 @@ h1, h2 {
   white-space: pre-wrap;
 }
 
+pre,
+.prewrap {
+  white-space: pre-wrap;
+}
+
+.preline {
+  white-space: pre-line;
+}
+
 .bordered {
   border: 1px solid #000000;
   padding: 0.5em;

@@ -4,6 +4,7 @@
 
 ### Added
 - File Browser now indexes large SD-card folders so directories with many books can be browsed without loading every filename into memory at once.
+- EPUB `<pre>` blocks and CSS `white-space` text now preserve indentation, blank lines, and wrapped code-like lines.
 - EPUB text clipping with saved highlights, clipping lists, and Kindle-style `/My Clippings.txt` export.
 - Per-book EPUB options for font, layout, styling, reading aids, and render modes, including `CrossInk Default`, `Balanced`, and `Light` modes for difficult books.
 

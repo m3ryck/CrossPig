@@ -54,8 +54,8 @@ constexpr size_t MAX_SELECTOR_LENGTH = 256;
 constexpr size_t CSS_LENGTH_FIELD_COUNT = 11;
 constexpr size_t CSS_LENGTH_BYTES = sizeof(float) + sizeof(uint8_t);
 constexpr size_t CSS_FIXED_STYLE_BYTES = 4 * sizeof(uint8_t) + (CSS_LENGTH_FIELD_COUNT * CSS_LENGTH_BYTES) +
-                                         4 * sizeof(uint8_t) + 2 * sizeof(uint8_t) + sizeof(uint32_t);
-static_assert(CSS_FIXED_STYLE_BYTES == 69,
+                                         4 * sizeof(uint8_t) + 2 * sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
+static_assert(CSS_FIXED_STYLE_BYTES == 70,
               "CssStyle cache payload changed; update read/writeCssStylePayload and bump CSS_CACHE_VERSION");
 
 // Check if character is CSS whitespace
@@ -335,6 +335,14 @@ CssTextDecoration CssParser::interpretDecoration(std::string_view val) {
   return CssTextDecoration::None;
 }
 
+CssWhiteSpace CssParser::interpretWhiteSpace(std::string_view val) {
+  const std::string_view whiteSpaceValue = stripTrailingImportant(val);
+  if (iequalsAscii(whiteSpaceValue, "pre")) return CssWhiteSpace::Pre;
+  if (iequalsAscii(whiteSpaceValue, "pre-wrap")) return CssWhiteSpace::PreWrap;
+  if (iequalsAscii(whiteSpaceValue, "pre-line")) return CssWhiteSpace::PreLine;
+  return CssWhiteSpace::Normal;
+}
+
 CssLength CssParser::interpretLength(std::string_view val) {
   CssLength result;
   tryInterpretLength(val, result);
@@ -402,6 +410,9 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
   } else if (iequalsAscii(name, "text-decoration") || iequalsAscii(name, "text-decoration-line")) {
     style.textDecoration = interpretDecoration(value);
     style.defined.textDecoration = 1;
+  } else if (iequalsAscii(name, "white-space")) {
+    style.whiteSpace = interpretWhiteSpace(value);
+    style.defined.whiteSpace = 1;
   } else if (iequalsAscii(name, "text-indent")) {
     style.textIndent = interpretLength(value);
     style.defined.textIndent = 1;
@@ -879,7 +890,8 @@ bool CssParser::writeCssStylePayload(FsFile& file, const CssStyle& style) {
       !writeByte(static_cast<uint8_t>(style.backgroundBlack ? 1 : 0)) ||
       !writeByte(static_cast<uint8_t>(style.verticalAlign)) || !writeByte(static_cast<uint8_t>(style.direction)) ||
       !writeByte(static_cast<uint8_t>(style.pageBreakBefore ? 1 : 0)) ||
-      !writeByte(static_cast<uint8_t>(style.pageBreakAfter ? 1 : 0))) {
+      !writeByte(static_cast<uint8_t>(style.pageBreakAfter ? 1 : 0)) ||
+      !writeByte(static_cast<uint8_t>(style.whiteSpace))) {
     return false;
   }
 
@@ -903,6 +915,7 @@ bool CssParser::writeCssStylePayload(FsFile& file, const CssStyle& style) {
   if (style.defined.backgroundBlack) definedBits |= 1 << 16;
   if (style.defined.verticalAlign) definedBits |= 1 << 17;
   if (style.defined.direction) definedBits |= 1 << 18;
+  if (style.defined.whiteSpace) definedBits |= 1 << 19;
   if (style.defined.pageBreakBefore) definedBits |= 1 << 20;
   if (style.defined.pageBreakAfter) definedBits |= 1 << 21;
   return writeBytes(&definedBits, sizeof(definedBits));
@@ -949,6 +962,9 @@ bool CssParser::readCssStylePayload(FsFile& file, CssStyle& style) {
   style.pageBreakBefore = pageBreakVal != 0;
   if (file.read(&pageBreakVal, 1) != 1) return false;
   style.pageBreakAfter = pageBreakVal != 0;
+  uint8_t whiteSpaceVal = 0;
+  if (file.read(&whiteSpaceVal, 1) != 1) return false;
+  style.whiteSpace = static_cast<CssWhiteSpace>(whiteSpaceVal);
 
   uint32_t definedBits = 0;
   if (file.read(&definedBits, sizeof(definedBits)) != sizeof(definedBits)) return false;
@@ -971,6 +987,7 @@ bool CssParser::readCssStylePayload(FsFile& file, CssStyle& style) {
   style.defined.backgroundBlack = (definedBits & 1 << 16) != 0;
   style.defined.verticalAlign = (definedBits & 1 << 17) != 0;
   style.defined.direction = (definedBits & 1 << 18) != 0;
+  style.defined.whiteSpace = (definedBits & 1 << 19) != 0;
   style.defined.pageBreakBefore = (definedBits & 1 << 20) != 0;
   style.defined.pageBreakAfter = (definedBits & 1 << 21) != 0;
   return true;
