@@ -94,6 +94,7 @@ class ActivityManager {
   void goToJoinNetworkFileTransfer(std::string returnBookPath = {});
   void goToHotspotFileTransfer(std::string returnBookPath = {});
   void goToNearbyStatsSync();
+  void goToBookStore();
   void goToSettings();
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();

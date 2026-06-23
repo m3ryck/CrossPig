@@ -15,6 +15,7 @@
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "home/RecentBooksGridActivity.h"
+#include "network/BookStoreActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/NearbyStatsSyncActivity.h"
 #include "reader/ReaderActivity.h"
@@ -208,6 +209,10 @@ void ActivityManager::goToNearbyStatsSync() {
   replaceActivity(std::make_unique<NearbyStatsSyncActivity>(renderer, mappedInput));
 }
 
+void ActivityManager::goToBookStore() {
+  replaceActivity(std::make_unique<BookStoreActivity>(renderer, mappedInput));
+}
+
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFileBrowser(std::string path) {
@@ -261,6 +266,8 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
     } else if (activityName == "CrossPointWebServer") {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
     } else if (activityName == "NearbyStatsSync") {
+      initialMenuItem = HomeMenuItem::FILE_TRANSFER;
+    } else if (activityName == "BookStoreActivity") {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
     } else if (activityName == "Settings") {
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
