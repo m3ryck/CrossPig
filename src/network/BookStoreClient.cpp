@@ -95,7 +95,7 @@ bool BookStoreClient::buildUrl(char* out, size_t outLen, const char* path) const
 
 bool BookStoreClient::buildSearchBody(char* out, size_t outLen, const char* query, uint32_t page) const {
   if (!query) return false;
-  const int n = std::snprintf(out, outLen, "message=%s&page=%lu&limit=5&order=bestmatch", query, page);
+  const int n = std::snprintf(out, outLen, "message=%s&page=%u&limit=5&order=bestmatch", query, page);
   return n > 0 && static_cast<size_t>(n) < outLen;
 }
 
@@ -456,7 +456,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   while (!cancelled && (readLen = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
     if (file.write(buffer, readLen) != static_cast<size_t>(readLen)) {
       file.close();
-      Storage.deleteFile(destPath.c_str());
+      Storage.remove(destPath.c_str());
       esp_http_client_cleanup(client);
       setError(BookStoreError::File, "SD write failed");
       return BookStoreError::File;
@@ -474,7 +474,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   esp_http_client_cleanup(client);
 
   if (cancelled) {
-    Storage.deleteFile(destPath.c_str());
+    Storage.remove(destPath.c_str());
     setError(BookStoreError::Cancelled, "Download cancelled");
     return BookStoreError::Cancelled;
   }
@@ -486,7 +486,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     const size_t read = verifyFile.read(header, sizeof(header));
     verifyFile.close();
     if (read >= 6 && std::strncmp(header, "<html", 5) == 0) {
-      Storage.deleteFile(destPath.c_str());
+      Storage.remove(destPath.c_str());
       setError(BookStoreError::Quota, "Download rejected by server");
       return BookStoreError::Quota;
     }
