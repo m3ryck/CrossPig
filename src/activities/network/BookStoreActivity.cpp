@@ -198,6 +198,26 @@ void BookStoreActivity::loop() {
       }
       break;
 
+    case BookStoreState::Downloading:
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        cancelDownload = true;
+      }
+      break;
+
+    case BookStoreState::DownloadDone:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        activityManager.goToReader(downloadPath, false);
+      }
+      break;
+
+    case BookStoreState::Error:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+          mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        resetToMainMenu();
+        requestUpdate();
+      }
+      break;
+
     // Other states handled in later tasks
     default:
       break;
@@ -457,5 +477,76 @@ void BookStoreActivity::renderMainMenu() {
                [](int index) { return menuIcons[index]; });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderDownloading() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
+  char msg[128];
+  if (downloadTotal > 0) {
+    std::snprintf(msg, sizeof(msg), "%s\n%zu / %zu bytes", I18N.get(StrId::STR_BOOK_STORE_DOWNLOADING),
+                  downloadProgress, downloadTotal);
+  } else {
+    std::snprintf(msg, sizeof(msg), "%s\n%zu bytes", I18N.get(StrId::STR_BOOK_STORE_DOWNLOADING), downloadProgress);
+  }
+
+  renderer.drawCenteredText(UI_10_FONT_ID, y, msg, true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_EMPTY), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderDownloadDone() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
+  renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOK_STORE_DOWNLOAD_COMPLETE), true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BOOK_STORE_OPEN_BOOK), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderError() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
+  const char* msg = tr(STR_BOOK_STORE_DOWNLOAD_FAILED);
+  switch (lastError) {
+    case BookStoreError::Auth:
+      msg = tr(STR_BOOK_STORE_LOGIN_FAILED);
+      break;
+    case BookStoreError::Quota:
+      msg = tr(STR_BOOK_STORE_QUOTA_REACHED);
+      break;
+    case BookStoreError::NotFound:
+      msg = tr(STR_BOOK_STORE_NO_RESULTS);
+      break;
+    case BookStoreError::Network:
+      msg = tr(STR_BOOK_STORE_NO_WIFI);
+      break;
+    case BookStoreError::File:
+      msg = tr(STR_BOOK_STORE_SAVE_FAILED);
+      break;
+    case BookStoreError::Cancelled:
+      msg = tr(STR_BOOK_STORE_CANCELED);
+      break;
+    default:
+      break;
+  }
+
+  renderer.drawCenteredText(UI_10_FONT_ID, y, msg, true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK), tr(STR_EMPTY), tr(STR_EMPTY));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
