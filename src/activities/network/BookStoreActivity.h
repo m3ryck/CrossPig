@@ -19,6 +19,7 @@ enum class BookStoreState {
   ConfirmDownload,
   Downloading,
   DownloadDone,
+  VerificationResult,
   Error
 };
 
@@ -32,7 +33,7 @@ class BookStoreActivity final : public Activity {
 
   // Settings
   int settingsIndex = 0;
-  static constexpr int SETTINGS_ITEM_COUNT = 4;
+  static constexpr int SETTINGS_ITEM_COUNT = 5;
 
   // Search input
   std::string searchQuery;
@@ -52,6 +53,9 @@ class BookStoreActivity final : public Activity {
 
   // Async client
   std::unique_ptr<BookStoreClient> client;
+
+  // Verification result
+  char verificationMessage[128] = {0};
 
   // Error
   BookStoreError lastError = BookStoreError::Ok;
@@ -84,5 +88,6 @@ class BookStoreActivity final : public Activity {
   void renderConfirmDownload();
   void renderDownloading();
   void renderDownloadDone();
+  void renderVerificationResult();
   void renderError();
 };

@@ -73,45 +73,59 @@ void BookStoreActivity::loop() {
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
         static constexpr StrId labels[SETTINGS_ITEM_COUNT] = {
             StrId::STR_BOOK_STORE_BASE_URL, StrId::STR_BOOK_STORE_EMAIL, StrId::STR_BOOK_STORE_PASSWORD,
-            StrId::STR_BOOK_STORE_DOWNLOAD_PATH};
-        char* target = nullptr;
-        size_t maxLen = 0;
-        InputType inputType = InputType::Text;
-        switch (settingsIndex) {
-          case 0:
-            target = SETTINGS.bookStoreBaseUrl;
-            maxLen = sizeof(SETTINGS.bookStoreBaseUrl);
-            inputType = InputType::Url;
-            break;
-          case 1:
-            target = SETTINGS.bookStoreEmail;
-            maxLen = sizeof(SETTINGS.bookStoreEmail);
-            inputType = InputType::Text;
-            break;
-          case 2:
-            target = SETTINGS.bookStorePassword;
-            maxLen = sizeof(SETTINGS.bookStorePassword);
-            inputType = InputType::Password;
-            break;
-          case 3:
-            target = SETTINGS.bookStoreDownloadPath;
-            maxLen = sizeof(SETTINGS.bookStoreDownloadPath);
-            inputType = InputType::Text;
-            break;
-        }
-        if (target) {
-          startActivityForResult(
-              std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(labels[settingsIndex]),
-                                                      std::string(target), maxLen, inputType),
-              [this, target, maxLen](const ActivityResult& result) {
-                if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
-                  const auto& keyboardResult = std::get<KeyboardResult>(result.data);
-                  std::strncpy(target, keyboardResult.text.c_str(), maxLen - 1);
-                  target[maxLen - 1] = '\0';
-                  SETTINGS.saveToFile();
-                }
-                requestUpdate();
-              });
+            StrId::STR_BOOK_STORE_DOWNLOAD_PATH, StrId::STR_BOOK_STORE_VERIFY_LOGIN};
+        if (settingsIndex == SETTINGS_ITEM_COUNT - 1) {
+          // Verify credentials
+          ensureClient();
+          BookStoreError err = client->login();
+          if (err == BookStoreError::Ok) {
+            std::strncpy(verificationMessage, tr(STR_BOOK_STORE_LOGIN_OK), sizeof(verificationMessage) - 1);
+          } else {
+            std::strncpy(verificationMessage, client->getLastErrorMessage(), sizeof(verificationMessage) - 1);
+          }
+          verificationMessage[sizeof(verificationMessage) - 1] = '\0';
+          state = BookStoreState::VerificationResult;
+          requestUpdate();
+        } else {
+          char* target = nullptr;
+          size_t maxLen = 0;
+          InputType inputType = InputType::Text;
+          switch (settingsIndex) {
+            case 0:
+              target = SETTINGS.bookStoreBaseUrl;
+              maxLen = sizeof(SETTINGS.bookStoreBaseUrl);
+              inputType = InputType::Url;
+              break;
+            case 1:
+              target = SETTINGS.bookStoreEmail;
+              maxLen = sizeof(SETTINGS.bookStoreEmail);
+              inputType = InputType::Text;
+              break;
+            case 2:
+              target = SETTINGS.bookStorePassword;
+              maxLen = sizeof(SETTINGS.bookStorePassword);
+              inputType = InputType::Password;
+              break;
+            case 3:
+              target = SETTINGS.bookStoreDownloadPath;
+              maxLen = sizeof(SETTINGS.bookStoreDownloadPath);
+              inputType = InputType::Text;
+              break;
+          }
+          if (target) {
+            startActivityForResult(
+                std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(labels[settingsIndex]),
+                                                        std::string(target), maxLen, inputType),
+                [this, target, maxLen](const ActivityResult& result) {
+                  if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+                    const auto& keyboardResult = std::get<KeyboardResult>(result.data);
+                    std::strncpy(target, keyboardResult.text.c_str(), maxLen - 1);
+                    target[maxLen - 1] = '\0';
+                    SETTINGS.saveToFile();
+                  }
+                  requestUpdate();
+                });
+          }
         }
       }
       buttonNavigator.onNext([this] {
@@ -320,6 +334,9 @@ void BookStoreActivity::render(RenderLock&&) {
     case BookStoreState::DownloadDone:
       renderDownloadDone();
       break;
+    case BookStoreState::VerificationResult:
+      renderVerificationResult();
+      break;
     case BookStoreState::Error:
       renderError();
       break;
@@ -340,9 +357,9 @@ void BookStoreActivity::renderSettings() {
 
   static constexpr StrId labels[SETTINGS_ITEM_COUNT] = {
       StrId::STR_BOOK_STORE_BASE_URL, StrId::STR_BOOK_STORE_EMAIL, StrId::STR_BOOK_STORE_PASSWORD,
-      StrId::STR_BOOK_STORE_DOWNLOAD_PATH};
+      StrId::STR_BOOK_STORE_DOWNLOAD_PATH, StrId::STR_BOOK_STORE_VERIFY_LOGIN};
   const char* values[SETTINGS_ITEM_COUNT] = {SETTINGS.bookStoreBaseUrl, SETTINGS.bookStoreEmail,
-                                             SETTINGS.bookStorePassword, SETTINGS.bookStoreDownloadPath};
+                                             SETTINGS.bookStorePassword, SETTINGS.bookStoreDownloadPath, ""};
 
   GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, SETTINGS_ITEM_COUNT, settingsIndex,
                [](int index) { return std::string(I18N.get(labels[index])); },
@@ -511,6 +528,19 @@ void BookStoreActivity::renderDownloadDone() {
   renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOK_STORE_DOWNLOAD_COMPLETE), true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BOOK_STORE_OPEN_BOOK), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderVerificationResult() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
+  renderer.drawCenteredText(UI_10_FONT_ID, y, verificationMessage, true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_EMPTY), tr(STR_EMPTY), tr(STR_EMPTY));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
