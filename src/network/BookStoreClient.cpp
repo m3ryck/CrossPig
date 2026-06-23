@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 
 #include <cstdio>
@@ -97,11 +98,6 @@ bool BookStoreClient::buildSearchBody(char* out, size_t outLen, const char* quer
   if (!query) return false;
   const int n = std::snprintf(out, outLen, "message=%s&page=%u&limit=5&order=bestmatch", query, page);
   return n > 0 && static_cast<size_t>(n) < outLen;
-}
-
-bool BookStoreClient::isHtmlResponse(const char* contentType) const {
-  if (!contentType) return false;
-  return std::strstr(contentType, "text/html") != nullptr;
 }
 
 void BookStoreClient::setError(BookStoreError code, const char* msg) {
@@ -401,7 +397,7 @@ BookStoreError BookStoreClient::parseDownloadLinkResponse(const char* json, size
 }
 
 BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::string& destPath,
-                                              ProgressCallback progress, bool* cancelFlag) {
+                                              ProgressCallback progress, const bool* cancelFlag) {
   char cookie[128];
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 

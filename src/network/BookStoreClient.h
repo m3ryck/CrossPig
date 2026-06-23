@@ -44,7 +44,7 @@ class BookStoreClient {
   BookStoreError search(const char* query, uint32_t page, std::vector<BookStoreBook>& out);
   BookStoreError resolveDownloadUrl(const BookStoreBook& book, std::string& outUrl);
   BookStoreError downloadFile(const std::string& url, const std::string& destPath, ProgressCallback progress = nullptr,
-                              bool* cancelFlag = nullptr);
+                              const bool* cancelFlag = nullptr);
 
   const char* getLastErrorMessage() const { return lastErrorMessage; }
 
@@ -65,5 +65,4 @@ class BookStoreClient {
   void setError(BookStoreError code, const char* msg);
   bool buildUrl(char* out, size_t outLen, const char* path) const;
   bool buildSearchBody(char* out, size_t outLen, const char* query, uint32_t page) const;
-  bool isHtmlResponse(const char* contentType) const;
 };
