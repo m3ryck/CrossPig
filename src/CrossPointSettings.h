@@ -382,6 +382,11 @@ class CrossPointSettings {
   char opdsServerUrl[128] = "";
   char opdsUsername[64] = "";
   char opdsPassword[64] = "";
+  // Book Store settings
+  char bookStoreBaseUrl[128] = "";
+  char bookStoreEmail[64] = "";
+  char bookStorePassword[64] = "";
+  char bookStoreDownloadPath[64] = "/downloads";
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press page turn button behavior
