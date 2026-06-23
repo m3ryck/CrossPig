@@ -5,6 +5,7 @@
 
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
+#include "fontIds.h"
 
 void BookStoreActivity::onEnter() {
   Activity::onEnter();
@@ -123,10 +124,53 @@ void BookStoreActivity::loop() {
       });
       break;
 
+    case BookStoreState::SearchInput:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        startActivityForResult(
+            std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_BOOK_STORE_SEARCH), searchQuery, 64,
+                                                    InputType::Text),
+            [this](const ActivityResult& result) {
+              if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+                const auto& keyboardResult = std::get<KeyboardResult>(result.data);
+                searchQuery = keyboardResult.text;
+                if (!searchQuery.empty()) {
+                  startSearch();
+                } else {
+                  requestUpdate();
+                }
+              } else {
+                resetToMainMenu();
+                requestUpdate();
+              }
+            });
+      }
+      break;
+
     // Other states handled in later tasks
     default:
       break;
   }
+}
+
+void BookStoreActivity::startSearch() {
+  state = BookStoreState::Searching;
+  books.clear();
+  resultSelectedIndex = 0;
+  requestUpdate();
+
+  ensureClient();
+  BookStoreError err = client->search(searchQuery.c_str(), currentPage, books);
+  onSearchCompleted(err);
+}
+
+void BookStoreActivity::onSearchCompleted(BookStoreError err) {
+  if (err != BookStoreError::Ok) {
+    lastError = err;
+    state = BookStoreState::Error;
+  } else {
+    state = BookStoreState::ResultsList;
+  }
+  requestUpdate();
 }
 
 void BookStoreActivity::render(RenderLock&&) {
@@ -190,6 +234,33 @@ void BookStoreActivity::renderSettings() {
 
   const auto labelsHints = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labelsHints.btn1, labelsHints.btn2, labelsHints.btn3, labelsHints.btn4);
+}
+
+void BookStoreActivity::renderSearchInput() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE_SEARCH));
+
+  // Centered prompt
+  const int y = renderer.getScreenHeight() / 2;
+  renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_BOOK_STORE_SEARCH), true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderSearching() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2;
+  renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_LOADING), true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_EMPTY), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void BookStoreActivity::renderMainMenu() {
