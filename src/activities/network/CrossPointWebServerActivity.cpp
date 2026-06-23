@@ -136,6 +136,8 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Create Hotspot";
   } else if (mode == NetworkMode::NEARBY_STATS_SYNC) {
     modeName = "Nearby Stats Sync";
+  } else if (mode == NetworkMode::BOOK_STORE) {
+    modeName = "Book Store";
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
 
@@ -144,6 +146,11 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 
   if (mode == NetworkMode::NEARBY_STATS_SYNC) {
     activityManager.goToNearbyStatsSync();
+    return;
+  }
+
+  if (mode == NetworkMode::BOOK_STORE) {
+    activityManager.goToBookStore();
     return;
   }
 
