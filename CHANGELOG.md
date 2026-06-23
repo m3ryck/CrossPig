@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- New **Book Store** activity reachable from `Home > File Transfer > Book Store`. It allows searching and downloading books from a configurable Z-library-compatible source, with settings for store URL, email, password, and download folder.
+
 ## [v1.3.3] - 2026-06-13
 
 ### Added
