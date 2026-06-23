@@ -68,6 +68,61 @@ void BookStoreActivity::loop() {
       });
       break;
 
+    case BookStoreState::Settings:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        static constexpr StrId labels[SETTINGS_ITEM_COUNT] = {
+            StrId::STR_BOOK_STORE_BASE_URL, StrId::STR_BOOK_STORE_EMAIL, StrId::STR_BOOK_STORE_PASSWORD,
+            StrId::STR_BOOK_STORE_DOWNLOAD_PATH};
+        char* target = nullptr;
+        size_t maxLen = 0;
+        InputType inputType = InputType::Text;
+        switch (settingsIndex) {
+          case 0:
+            target = SETTINGS.bookStoreBaseUrl;
+            maxLen = sizeof(SETTINGS.bookStoreBaseUrl);
+            inputType = InputType::Url;
+            break;
+          case 1:
+            target = SETTINGS.bookStoreEmail;
+            maxLen = sizeof(SETTINGS.bookStoreEmail);
+            inputType = InputType::Text;
+            break;
+          case 2:
+            target = SETTINGS.bookStorePassword;
+            maxLen = sizeof(SETTINGS.bookStorePassword);
+            inputType = InputType::Password;
+            break;
+          case 3:
+            target = SETTINGS.bookStoreDownloadPath;
+            maxLen = sizeof(SETTINGS.bookStoreDownloadPath);
+            inputType = InputType::Text;
+            break;
+        }
+        if (target) {
+          startActivityForResult(
+              std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(labels[settingsIndex]),
+                                                      std::string(target), maxLen, inputType),
+              [this, target, maxLen](const ActivityResult& result) {
+                if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+                  const auto& keyboardResult = std::get<KeyboardResult>(result.data);
+                  std::strncpy(target, keyboardResult.text.c_str(), maxLen - 1);
+                  target[maxLen - 1] = '\0';
+                  SETTINGS.saveToFile();
+                }
+                requestUpdate();
+              });
+        }
+      }
+      buttonNavigator.onNext([this] {
+        settingsIndex = ButtonNavigator::nextIndex(settingsIndex, SETTINGS_ITEM_COUNT);
+        requestUpdate();
+      });
+      buttonNavigator.onPrevious([this] {
+        settingsIndex = ButtonNavigator::previousIndex(settingsIndex, SETTINGS_ITEM_COUNT);
+        requestUpdate();
+      });
+      break;
+
     // Other states handled in later tasks
     default:
       break;
@@ -111,6 +166,30 @@ void BookStoreActivity::render(RenderLock&&) {
   }
 
   renderer.displayBuffer();
+}
+
+void BookStoreActivity::renderSettings() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE_SETTINGS));
+
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+
+  static constexpr StrId labels[SETTINGS_ITEM_COUNT] = {
+      StrId::STR_BOOK_STORE_BASE_URL, StrId::STR_BOOK_STORE_EMAIL, StrId::STR_BOOK_STORE_PASSWORD,
+      StrId::STR_BOOK_STORE_DOWNLOAD_PATH};
+  const char* values[SETTINGS_ITEM_COUNT] = {SETTINGS.bookStoreBaseUrl, SETTINGS.bookStoreEmail,
+                                             SETTINGS.bookStorePassword, SETTINGS.bookStoreDownloadPath};
+
+  GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, SETTINGS_ITEM_COUNT, settingsIndex,
+               [](int index) { return std::string(I18N.get(labels[index])); },
+               [values](int index) { return std::string(values[index]); }, nullptr);
+
+  const auto labelsHints = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labelsHints.btn1, labelsHints.btn2, labelsHints.btn3, labelsHints.btn4);
 }
 
 void BookStoreActivity::renderMainMenu() {
