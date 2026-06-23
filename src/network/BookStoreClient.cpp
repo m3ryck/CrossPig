@@ -198,3 +198,132 @@ BookStoreError BookStoreClient::parseLoginResponse(const char* json, size_t len)
 
   return BookStoreError::Ok;
 }
+
+BookStoreError BookStoreClient::search(const char* query, uint32_t page, std::vector<BookStoreBook>& out) {
+  out.clear();
+
+  if (!isLoggedIn()) {
+    const BookStoreError err = login();
+    if (err != BookStoreError::Ok) return err;
+  }
+
+  char url[256];
+  if (!buildUrl(url, sizeof(url), "/eapi/book/search")) {
+    setError(BookStoreError::Network, "Failed to build search URL");
+    return BookStoreError::Network;
+  }
+
+  char body[384];
+  if (!buildSearchBody(body, sizeof(body), query, page)) {
+    setError(BookStoreError::Network, "Failed to build search body");
+    return BookStoreError::Network;
+  }
+
+  char cookie[128];
+  std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
+
+  std::string response;
+  if (!postForm(url, body, response, cookie)) {
+    setError(BookStoreError::Network, "Search request failed");
+    return BookStoreError::Network;
+  }
+
+  if (response.size() > 16384) {
+    setError(BookStoreError::Network, "Search response too large");
+    return BookStoreError::Network;
+  }
+
+  return parseSearchResponse(response.c_str(), response.size(), out);
+}
+
+BookStoreError BookStoreClient::parseSearchResponse(const char* json, size_t len, std::vector<BookStoreBook>& out) {
+  if (!json || len == 0) {
+    setError(BookStoreError::Parse, "Empty search response");
+    return BookStoreError::Parse;
+  }
+
+  const std::string_view view(json, len);
+  if (view.find("\"success\":1") == std::string_view::npos && view.find("\"success\": 1") == std::string_view::npos) {
+    if (view.find("Please login") != std::string_view::npos) {
+      userId[0] = '\0';
+      userKey[0] = '\0';
+      setError(BookStoreError::Auth, "Session expired");
+      return BookStoreError::Auth;
+    }
+    setError(BookStoreError::Server, "Search request rejected");
+    return BookStoreError::Server;
+  }
+
+  auto extractString = [](std::string_view v, const char* key, char* out, size_t outLen) {
+    const std::string pattern = std::string("\"") + key + "\":\"";
+    size_t pos = v.find(pattern);
+    if (pos == std::string_view::npos) {
+      out[0] = '\0';
+      return;
+    }
+    pos += pattern.size();
+    const size_t end = v.find('"', pos);
+    if (end == std::string_view::npos) {
+      out[0] = '\0';
+      return;
+    }
+    const size_t copyLen = std::min(outLen - 1, end - pos);
+    std::strncpy(out, v.data() + pos, copyLen);
+    out[copyLen] = '\0';
+  };
+
+  auto extractUint = [](std::string_view v, const char* key) -> uint32_t {
+    const std::string pattern = std::string("\"") + key + "\":";
+    size_t pos = v.find(pattern);
+    if (pos == std::string_view::npos) return 0;
+    pos += pattern.size();
+    // skip whitespace and quotes
+    while (pos < v.size() && (v[pos] == ' ' || v[pos] == '"')) pos++;
+    uint32_t value = 0;
+    while (pos < v.size() && v[pos] >= '0' && v[pos] <= '9') {
+      value = value * 10 + (v[pos] - '0');
+      pos++;
+    }
+    return value;
+  };
+
+  // Find the books array. A simple approach: split the response by occurrences of {"id":
+  out.reserve(5);
+  size_t pos = 0;
+  while (out.size() < 5) {
+    pos = view.find("{\"id\":", pos);
+    if (pos == std::string_view::npos) break;
+
+    // Find matching closing brace at brace depth 0
+    size_t end = pos + 1;
+    int depth = 1;
+    while (end < view.size() && depth > 0) {
+      if (view[end] == '{') depth++;
+      else if (view[end] == '}') depth--;
+      end++;
+    }
+
+    const std::string_view bookView(view.data() + pos, end - pos);
+    BookStoreBook book;
+    extractString(bookView, "id", book.id, sizeof(book.id));
+    extractString(bookView, "hash", book.hash, sizeof(book.hash));
+    extractString(bookView, "title", book.title, sizeof(book.title));
+    extractString(bookView, "author", book.author, sizeof(book.author));
+    extractString(bookView, "extension", book.extension, sizeof(book.extension));
+    extractString(bookView, "language", book.language, sizeof(book.language));
+    extractString(bookView, "filesizeString", book.filesizeString, sizeof(book.filesizeString));
+    book.year = extractUint(bookView, "year");
+
+    if (book.id[0] != '\0') {
+      out.push_back(book);
+    }
+    pos = end;
+  }
+
+  if (out.empty()) {
+    setError(BookStoreError::NotFound, "No books found");
+    return BookStoreError::NotFound;
+  }
+
+  return BookStoreError::Ok;
+}
