@@ -174,6 +174,30 @@ void BookStoreActivity::loop() {
       }
       break;
 
+    case BookStoreState::BookDetails:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        state = BookStoreState::ConfirmDownload;
+        requestUpdate();
+      }
+      break;
+
+    case BookStoreState::ConfirmDownload:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        state = BookStoreState::Downloading;
+        downloadProgress = 0;
+        downloadTotal = 0;
+        cancelDownload = false;
+        requestUpdate();
+
+        ensureClient();
+        BookStoreError err = client->resolveDownloadUrl(selectedBook, downloadUrl);
+        onDownloadLinkResolved(err);
+      } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        state = BookStoreState::BookDetails;
+        requestUpdate();
+      }
+      break;
+
     // Other states handled in later tasks
     default:
       break;
@@ -197,6 +221,50 @@ void BookStoreActivity::onSearchCompleted(BookStoreError err) {
     state = BookStoreState::Error;
   } else {
     state = BookStoreState::ResultsList;
+  }
+  requestUpdate();
+}
+
+void BookStoreActivity::onDownloadLinkResolved(BookStoreError err) {
+  if (err != BookStoreError::Ok) {
+    lastError = err;
+    state = BookStoreState::Error;
+    requestUpdate();
+    return;
+  }
+
+  buildDownloadPath();
+  BookStoreError downloadErr = client->downloadFile(
+      downloadUrl, downloadPath,
+      [this](size_t downloaded, size_t total) {
+        downloadProgress = downloaded;
+        downloadTotal = total;
+        requestUpdate(true);
+      },
+      &cancelDownload);
+  onDownloadCompleted(downloadErr);
+}
+
+void BookStoreActivity::buildDownloadPath() {
+  char fileName[160];
+  std::snprintf(fileName, sizeof(fileName), "%s_%s.%s", selectedBook.title, selectedBook.id,
+                selectedBook.extension);
+  // Sanitize filename: replace path separators and spaces
+  for (size_t i = 0; fileName[i] != '\0'; i++) {
+    if (fileName[i] == '/' || fileName[i] == '\\' || fileName[i] == ' ') {
+      fileName[i] = '_';
+    }
+  }
+
+  downloadPath = std::string(SETTINGS.bookStoreDownloadPath) + "/" + fileName;
+}
+
+void BookStoreActivity::onDownloadCompleted(BookStoreError err) {
+  if (err != BookStoreError::Ok) {
+    lastError = err;
+    state = BookStoreState::Error;
+  } else {
+    state = BookStoreState::DownloadDone;
   }
   requestUpdate();
 }
@@ -317,6 +385,54 @@ void BookStoreActivity::renderResultsList() {
                [](int) { return UIIcon::Book; });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderBookDetails() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+
+  char buf[256];
+  std::snprintf(buf, sizeof(buf), "%s\n%s\n%s, %s\n%s", selectedBook.title, selectedBook.author,
+                selectedBook.extension, selectedBook.filesizeString, selectedBook.language);
+
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  const int x = metrics.contentSidePadding;
+  const int maxWidth = pageWidth - metrics.contentSidePadding * 2;
+  const int maxLines = contentHeight / lineHeight;
+  const auto lines = renderer.wrappedText(UI_10_FONT_ID, buf, maxWidth, maxLines);
+
+  int y = contentTop;
+  for (const auto& line : lines) {
+    if (y + lineHeight > contentTop + contentHeight) break;
+    renderer.drawText(UI_10_FONT_ID, x, y, line.c_str(), true);
+    y += lineHeight;
+  }
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BOOK_STORE_DOWNLOADING), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderConfirmDownload() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
+
+  const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
+  char msg[192];
+  std::snprintf(msg, sizeof(msg), "%s\n%s (%s, %s)", I18N.get(StrId::STR_BOOK_STORE_CONFIRM_DOWNLOAD),
+                selectedBook.title, selectedBook.extension, selectedBook.filesizeString);
+
+  renderer.drawCenteredText(UI_10_FONT_ID, y, msg, true);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CONFIRM), tr(STR_EMPTY), tr(STR_EMPTY));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
