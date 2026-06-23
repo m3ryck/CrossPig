@@ -146,6 +146,34 @@ void BookStoreActivity::loop() {
       }
       break;
 
+    case BookStoreState::ResultsList:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        if (resultSelectedIndex >= 0 && resultSelectedIndex < static_cast<int>(books.size())) {
+          selectedBook = books[resultSelectedIndex];
+          state = BookStoreState::BookDetails;
+          requestUpdate();
+        }
+      }
+      buttonNavigator.onNext([this] {
+        resultSelectedIndex = ButtonNavigator::nextIndex(resultSelectedIndex, static_cast<int>(books.size()));
+        requestUpdate();
+      });
+      buttonNavigator.onPrevious([this] {
+        resultSelectedIndex = ButtonNavigator::previousIndex(resultSelectedIndex, static_cast<int>(books.size()));
+        requestUpdate();
+      });
+      if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
+        currentPage++;
+        startSearch();
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
+        if (currentPage > 1) {
+          currentPage--;
+          startSearch();
+        }
+      }
+      break;
+
     // Other states handled in later tasks
     default:
       break;
@@ -260,6 +288,35 @@ void BookStoreActivity::renderSearching() {
   renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_LOADING), true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_EMPTY), tr(STR_EMPTY), tr(STR_EMPTY));
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+void BookStoreActivity::renderResultsList() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  char header[64];
+  std::snprintf(header, sizeof(header), "%s (%u)", I18N.get(StrId::STR_BOOK_STORE_SEARCH), currentPage);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, header);
+
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+
+  GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(books.size()),
+               resultSelectedIndex,
+               [this](int index) {
+                 return std::string(books[index].title);
+               },
+               [this](int index) {
+                 char buf[128];
+                 std::snprintf(buf, sizeof(buf), "%s / %s / %s", books[index].author, books[index].extension,
+                               books[index].filesizeString);
+                 return std::string(buf);
+               },
+               [](int) { return UIIcon::Book; });
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
