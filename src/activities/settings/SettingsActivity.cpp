@@ -212,7 +212,7 @@ void SettingsActivity::rebuildSettingsLists() {
   // reader activity ran — otherwise the font-family picker shows stale list.
   sdFontSystem.refreshIfDirty();
 
-  const auto allSettings = getSettingsList(&sdFontSystem.registry());
+  const auto& allSettings = getSettingsList(&sdFontSystem.registry());
   displaySettings = buildGroupedDisplaySettingsList(allSettings);
   displaySleepSettings = buildDisplaySleepSettingsList(allSettings);
   readerSettings = buildReaderSettingsParentList(allSettings);

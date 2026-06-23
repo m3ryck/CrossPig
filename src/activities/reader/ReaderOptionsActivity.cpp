@@ -82,7 +82,7 @@ void ReaderOptionsActivity::rebuildSettingsList() {
   fontSettings.clear();
   pageLayoutSettings.clear();
   sdFontSystem.refreshIfDirty();
-  const auto allSettings = getSettingsList(&sdFontSystem.registry());
+  const auto& allSettings = getSettingsList(&sdFontSystem.registry());
   settings = buildReaderSettingsParentList(allSettings);
   fontSettings = buildReaderFontSettingsList(allSettings);
   pageLayoutSettings = buildReaderPageLayoutSettingsList(allSettings);

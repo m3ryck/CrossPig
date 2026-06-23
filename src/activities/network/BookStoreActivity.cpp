@@ -2,10 +2,14 @@
 
 #include <I18n.h>
 #include <Logging.h>
+#include <WiFi.h>
 
+#include "SilentRestart.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiPowerSaveGuard.h"
 
 void BookStoreActivity::onEnter() {
   Activity::onEnter();
@@ -16,6 +20,11 @@ void BookStoreActivity::onEnter() {
 
 void BookStoreActivity::onExit() {
   client.reset();
+  if (wifiActivated) {
+    WiFi.disconnect(false);
+    delay(30);
+    silentRestart();
+  }
   Activity::onExit();
 }
 
@@ -31,9 +40,28 @@ void BookStoreActivity::resetToMainMenu() {
 void BookStoreActivity::ensureClient() {
   if (!client) {
     client = std::make_unique<BookStoreClient>();
-    client->setBaseUrl(SETTINGS.bookStoreBaseUrl);
-    client->setCredentials(SETTINGS.bookStoreEmail, SETTINGS.bookStorePassword);
   }
+  client->setBaseUrl(SETTINGS.bookStoreBaseUrl);
+  client->setCredentials(SETTINGS.bookStoreEmail, SETTINGS.bookStorePassword);
+}
+
+void BookStoreActivity::ensureWifiThen(std::function<void()> action) {
+  if (WiFi.status() == WL_CONNECTED) {
+    action();
+    return;
+  }
+  wifiActivated = true;
+  startActivityForResult(
+      std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+      [this, action](const ActivityResult& result) {
+        if (!result.isCancelled && WiFi.status() == WL_CONNECTED) {
+          action();
+        } else {
+          lastError = BookStoreError::Network;
+          state = BookStoreState::Error;
+          requestUpdate();
+        }
+      });
 }
 
 void BookStoreActivity::loop() {
@@ -76,16 +104,18 @@ void BookStoreActivity::loop() {
             StrId::STR_BOOK_STORE_DOWNLOAD_PATH, StrId::STR_BOOK_STORE_VERIFY_LOGIN};
         if (settingsIndex == SETTINGS_ITEM_COUNT - 1) {
           // Verify credentials
-          ensureClient();
-          BookStoreError err = client->login();
-          if (err == BookStoreError::Ok) {
-            std::strncpy(verificationMessage, tr(STR_BOOK_STORE_LOGIN_OK), sizeof(verificationMessage) - 1);
-          } else {
-            std::strncpy(verificationMessage, client->getLastErrorMessage(), sizeof(verificationMessage) - 1);
-          }
-          verificationMessage[sizeof(verificationMessage) - 1] = '\0';
-          state = BookStoreState::VerificationResult;
-          requestUpdate();
+          ensureWifiThen([this] {
+            ensureClient();
+            BookStoreError err = client->login();
+            if (err == BookStoreError::Ok) {
+              std::strncpy(verificationMessage, tr(STR_BOOK_STORE_LOGIN_OK), sizeof(verificationMessage) - 1);
+            } else {
+              std::strncpy(verificationMessage, client->getLastErrorMessage(), sizeof(verificationMessage) - 1);
+            }
+            verificationMessage[sizeof(verificationMessage) - 1] = '\0';
+            state = BookStoreState::VerificationResult;
+            requestUpdate();
+          });
         } else {
           char* target = nullptr;
           size_t maxLen = 0;
@@ -148,7 +178,7 @@ void BookStoreActivity::loop() {
                 const auto& keyboardResult = std::get<KeyboardResult>(result.data);
                 searchQuery = keyboardResult.text;
                 if (!searchQuery.empty()) {
-                  startSearch();
+                  ensureWifiThen([this] { startSearch(); });
                 } else {
                   requestUpdate();
                 }
@@ -197,15 +227,17 @@ void BookStoreActivity::loop() {
 
     case BookStoreState::ConfirmDownload:
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        state = BookStoreState::Downloading;
-        downloadProgress = 0;
-        downloadTotal = 0;
-        cancelDownload = false;
-        requestUpdate();
+        ensureWifiThen([this] {
+          state = BookStoreState::Downloading;
+          downloadProgress = 0;
+          downloadTotal = 0;
+          cancelDownload = false;
+          requestUpdate();
 
-        ensureClient();
-        BookStoreError err = client->resolveDownloadUrl(selectedBook, downloadUrl);
-        onDownloadLinkResolved(err);
+          ensureClient();
+          BookStoreError err = client->resolveDownloadUrl(selectedBook, downloadUrl);
+          onDownloadLinkResolved(err);
+        });
       } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
         state = BookStoreState::BookDetails;
         requestUpdate();

@@ -5,6 +5,9 @@
 ### Added
 - New **Book Store** activity reachable from `Home > File Transfer > Book Store`. It allows searching and downloading books from a configurable Z-library-compatible source, with settings for store URL, email, password, download folder, and a **Verify Login** option to test credentials before searching.
 
+### Fixed
+- Book Store TLS handshake failure when connecting to servers using Let's Encrypt certificates on the ESP32-C3. Fixed by providing the R13 intermediate CA (RSA 2048-bit) directly via `cert_pem` instead of relying on the global `crt_bundle_attach`, which avoids both the `mbedtls_pk_verify_ext()` issue in `esp-x509-crt-bundle` and the RSA 4096-bit operation needed for ISRG Root X1.
+
 ## [v1.3.3] - 2026-06-13
 
 ### Added

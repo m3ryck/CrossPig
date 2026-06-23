@@ -4,22 +4,66 @@
 #include <I18n.h>
 #include <Logging.h>
 
-#include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 
 #include <cstdio>
 #include <cstring>
 #include <string_view>
 
+#include "network/WifiPowerSaveGuard.h"
+
 namespace {
+
+// Let's Encrypt R13 intermediate — the CA that directly signed z-lib.fm's
+// certificate.  We use this as the trust anchor instead of the ISRG Root X1
+// (RSA 4096-bit) because the ESP32-C3 has no hardware RSA accelerator and
+// 4096-bit RSA operations may exhaust the ~380 KB heap during the TLS
+// handshake.  R13 uses a 2048-bit key which fits comfortably.
+// Additionally, using an explicit PEM avoids the esp-x509-crt-bundle code
+// which calls mbedtls_pk_verify_ext() for every intermediate cert and has
+// issues with certain RSA signature schemes.
+static constexpr const char* R13_PEM = R"(
+-----BEGIN CERTIFICATE-----
+MIIFBTCCAu2gAwIBAgIQWgDyEtjUtIDzkkFX6imDBTANBgkqhkiG9w0BAQsFADBP
+MQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFy
+Y2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMTAeFw0yNDAzMTMwMDAwMDBa
+Fw0yNzAzMTIyMzU5NTlaMDMxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBF
+bmNyeXB0MQwwCgYDVQQDEwNSMTMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEK
+AoIBAQClZ3CN0FaBZBUXYc25BtStGZCMJlA3mBZjklTb2cyEBZPs0+wIG6BgUUNI
+fSvHSJaetC3ancgnO1ehn6vw1g7UDjDKb5ux0daknTI+WE41b0VYaHEX/D7YXYKg
+L7JRbLAaXbhZzjVlyIuhrxA3/+OcXcJJFzT/jCuLjfC8cSyTDB0FxLrHzarJXnzR
+yQH3nAP2/Apd9Np75tt2QnDr9E0i2gB3b9bJXxf92nUupVcM9upctuBzpWjPoXTi
+dYJ+EJ/B9aLrAek4sQpEzNPCifVJNYIKNLMc6YjCR06CDgo28EdPivEpBHXazeGa
+XP9enZiVuppD0EqiFwUBBDDTMrOPAgMBAAGjgfgwgfUwDgYDVR0PAQH/BAQDAgGG
+MB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcDATASBgNVHRMBAf8ECDAGAQH/
+AgEAMB0GA1UdDgQWBBTnq58PLDOgU9NeT3jIsoQOO9aSMzAfBgNVHSMEGDAWgBR5
+tFnme7bl5AFzgAiIyBpY9umbbjAyBggrBgEFBQcBAQQmMCQwIgYIKwYBBQUHMAKG
+Fmh0dHA6Ly94MS5pLmxlbmNyLm9yZy8wEwYDVR0gBAwwCjAIBgZngQwBAgEwJwYD
+VR0fBCAwHjAcoBqgGIYWaHR0cDovL3gxLmMubGVuY3Iub3JnLzANBgkqhkiG9w0B
+AQsFAAOCAgEAUTdYUqEimzW7TbrOypLqCfL7VOwYf/Q79OH5cHLCZeggfQhDconl
+k7Kgh8b0vi+/XuWu7CN8n/UPeg1vo3G+taXirrytthQinAHGwc/UdbOygJa9zuBc
+VyqoH3CXTXDInT+8a+c3aEVMJ2St+pSn4ed+WkDp8ijsijvEyFwE47hulW0Ltzjg
+9fOV5Pmrg/zxWbRuL+k0DBDHEJennCsAen7c35Pmx7jpmJ/HtgRhcnz0yjSBvyIw
+6L1QIupkCv2SBODT/xDD3gfQQyKv6roV4G2EhfEyAsWpmojxjCUCGiyg97FvDtm/
+NK2LSc9lybKxB73I2+P2G3CaWpvvpAiHCVu30jW8GCxKdfhsXtnIy2imskQqVZ2m
+0Pmxobb28Tucr7xBK7CtwvPrb79os7u2XP3O5f9b/H66GNyRrglRXlrYjI1oGYL/
+f4I1n/Sgusda6WvA6C190kxjU15Y12mHU4+BxyR9cx2hhGS9fAjMZKJss28qxvz6
+Axu4CaDmRNZpK/pQrXF17yXCXkmEWgvSOEZy6Z9pcbLIVEGckV/iVeq0AOo2pkg9
+p4QRIy0tK2diRENLSF2KysFwbY6B26BFeFs3v1sYVRhFW9nLkOrQVporCS0KyZmf
+wVD89qSTlnctLcZnIavjKsKUu1nA1iU0yYMdYepKR7lWbnwhdx3ewok=
+-----END CERTIFICATE-----
+)";
+
 bool postForm(const char* url, const char* body, std::string& outResponse, const char* cookie = nullptr) {
+  WifiPowerSaveGuard psGuard;
+
   esp_http_client_config_t config = {};
   config.url = url;
   config.method = HTTP_METHOD_POST;
   config.timeout_ms = 30000;
   config.buffer_size = 2048;
   config.buffer_size_tx = 1024;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.cert_pem = R13_PEM;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) return false;
@@ -30,16 +74,24 @@ bool postForm(const char* url, const char* body, std::string& outResponse, const
   }
   esp_http_client_set_post_field(client, body, static_cast<int>(std::strlen(body)));
 
-  esp_err_t err = esp_http_client_perform(client);
+  esp_err_t err = esp_http_client_open(client, static_cast<int>(std::strlen(body)));
   if (err != ESP_OK) {
-    LOG_ERR("BOOKSTORE", "HTTP POST failed: %s", esp_err_to_name(err));
+    LOG_ERR("BOOKSTORE", "HTTP POST open failed: %s", esp_err_to_name(err));
     esp_http_client_cleanup(client);
     return false;
   }
 
+  const int64_t contentLen = esp_http_client_fetch_headers(client);
   const int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     LOG_ERR("BOOKSTORE", "HTTP POST status %d", status);
+    
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  if (contentLen < 0 || contentLen > 65536) {
+    LOG_ERR("BOOKSTORE", "HTTP POST response too large: %lld", contentLen);
+    
     esp_http_client_cleanup(client);
     return false;
   }
@@ -49,6 +101,13 @@ bool postForm(const char* url, const char* body, std::string& outResponse, const
   while ((readLen = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
     buffer[readLen] = '\0';
     outResponse.append(buffer);
+    if (outResponse.size() > 65536) {
+      LOG_ERR("BOOKSTORE", "HTTP POST response exceeded buffer limit");
+      
+      esp_http_client_cleanup(client);
+      outResponse.clear();
+      return false;
+    }
   }
 
   esp_http_client_cleanup(client);
@@ -398,6 +457,8 @@ BookStoreError BookStoreClient::parseDownloadLinkResponse(const char* json, size
 
 BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::string& destPath,
                                               ProgressCallback progress, const bool* cancelFlag) {
+  WifiPowerSaveGuard psGuard;
+
   char cookie[128];
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
@@ -407,7 +468,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   config.timeout_ms = 120000;
   config.buffer_size = 2048;
   config.buffer_size_tx = 1024;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  config.cert_pem = R13_PEM;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -417,17 +478,19 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32-" CROSSINK_VERSION);
   esp_http_client_set_header(client, "Cookie", cookie);
 
-  esp_err_t err = esp_http_client_perform(client);
+  esp_err_t err = esp_http_client_open(client, 0);
   if (err != ESP_OK) {
-    LOG_ERR("BOOKSTORE", "Download request failed: %s", esp_err_to_name(err));
+    LOG_ERR("BOOKSTORE", "Download open failed: %s", esp_err_to_name(err));
     esp_http_client_cleanup(client);
     setError(BookStoreError::Network, "Download request failed");
     return BookStoreError::Network;
   }
 
+  const int64_t totalLen = esp_http_client_fetch_headers(client);
   const int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     LOG_ERR("BOOKSTORE", "Download status %d", status);
+    
     esp_http_client_cleanup(client);
     setError(BookStoreError::File, "Download rejected by server");
     return BookStoreError::File;
@@ -435,12 +498,12 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
 
   FsFile file;
   if (!Storage.openFileForWrite("BOOKSTORE", destPath.c_str(), file)) {
+    
     esp_http_client_cleanup(client);
     setError(BookStoreError::File, "Could not create destination file");
     return BookStoreError::File;
   }
 
-  const int64_t totalLen = esp_http_client_get_content_length(client);
   if (progress) {
     progress(0, totalLen > 0 ? static_cast<size_t>(totalLen) : 0);
   }
@@ -453,6 +516,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     if (file.write(buffer, readLen) != static_cast<size_t>(readLen)) {
       file.close();
       Storage.remove(destPath.c_str());
+      
       esp_http_client_cleanup(client);
       setError(BookStoreError::File, "SD write failed");
       return BookStoreError::File;

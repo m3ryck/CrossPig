@@ -2,6 +2,7 @@
 
 #include "network/BookStoreClient.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,6 +55,9 @@ class BookStoreActivity final : public Activity {
   // Async client
   std::unique_ptr<BookStoreClient> client;
 
+  // WiFi management
+  bool wifiActivated = false;
+
   // Verification result
   char verificationMessage[128] = {0};
 
@@ -76,6 +80,7 @@ class BookStoreActivity final : public Activity {
   void onDownloadLinkResolved(BookStoreError err);
   void onDownloadCompleted(BookStoreError err);
   void ensureClient();
+  void ensureWifiThen(std::function<void()> action);
   void buildDownloadPath();
 
   // Render helpers

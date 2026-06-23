@@ -54,7 +54,7 @@ void ControlsOptionsActivity::rebuildSettingsList() {
   frontButtonSettings.clear();
   sideButtonSettings.clear();
 
-  const auto allSettings = getSettingsList();
+  const auto& allSettings = getSettingsList();
   settings = buildControlsSettingsParentList(allSettings);
   powerSettings = buildControlsPowerSettingsList(allSettings);
   frontButtonSettings = buildControlsFrontButtonSettingsList(allSettings);
