@@ -1,5 +1,6 @@
 #include "BookStoreClient.h"
 
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 
@@ -323,6 +324,172 @@ BookStoreError BookStoreClient::parseSearchResponse(const char* json, size_t len
   if (out.empty()) {
     setError(BookStoreError::NotFound, "No books found");
     return BookStoreError::NotFound;
+  }
+
+  return BookStoreError::Ok;
+}
+
+BookStoreError BookStoreClient::resolveDownloadUrl(const BookStoreBook& book, std::string& outUrl) {
+  if (!isLoggedIn()) {
+    const BookStoreError err = login();
+    if (err != BookStoreError::Ok) return err;
+  }
+
+  char path[128];
+  std::snprintf(path, sizeof(path), "/eapi/book/%s/%s/file", book.id, book.hash);
+
+  char url[256];
+  if (!buildUrl(url, sizeof(url), path)) {
+    setError(BookStoreError::Network, "Failed to build download URL");
+    return BookStoreError::Network;
+  }
+
+  char cookie[128];
+  std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
+
+  std::string response;
+  // GET request with cookie; reuse postForm but with empty body
+  if (!postForm(url, "", response, cookie)) {
+    setError(BookStoreError::Network, "Failed to resolve download link");
+    return BookStoreError::Network;
+  }
+
+  return parseDownloadLinkResponse(response.c_str(), response.size(), outUrl);
+}
+
+BookStoreError BookStoreClient::parseDownloadLinkResponse(const char* json, size_t len, std::string& outUrl) {
+  if (!json || len == 0) {
+    setError(BookStoreError::Parse, "Empty download link response");
+    return BookStoreError::Parse;
+  }
+
+  const std::string_view view(json, len);
+  if (view.find("\"success\":1") == std::string_view::npos && view.find("\"success\": 1") == std::string_view::npos) {
+    if (view.find("Download limit reached") != std::string_view::npos) {
+      setError(BookStoreError::Quota, "Download limit reached");
+      return BookStoreError::Quota;
+    }
+    if (view.find("Please login") != std::string_view::npos) {
+      userId[0] = '\0';
+      userKey[0] = '\0';
+      setError(BookStoreError::Auth, "Session expired");
+      return BookStoreError::Auth;
+    }
+    setError(BookStoreError::Server, "Download link request rejected");
+    return BookStoreError::Server;
+  }
+
+  const char* key = "\"downloadLink\":\"";
+  size_t pos = view.find(key);
+  if (pos == std::string_view::npos) {
+    key = "\"downloadLink\": \"";
+    pos = view.find(key);
+  }
+  if (pos == std::string_view::npos) {
+    setError(BookStoreError::Parse, "No download link in response");
+    return BookStoreError::Parse;
+  }
+  pos += std::strlen(key);
+  const size_t end = view.find('"', pos);
+  if (end == std::string_view::npos) {
+    setError(BookStoreError::Parse, "Malformed download link");
+    return BookStoreError::Parse;
+  }
+
+  outUrl.assign(view.data() + pos, end - pos);
+  return BookStoreError::Ok;
+}
+
+BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::string& destPath,
+                                              ProgressCallback progress, bool* cancelFlag) {
+  char cookie[128];
+  std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
+
+  // HttpDownloader does not expose a custom Cookie header, so download directly with esp_http_client.
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.timeout_ms = 120000;
+  config.buffer_size = 2048;
+  config.buffer_size_tx = 1024;
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    setError(BookStoreError::File, "Failed to init download client");
+    return BookStoreError::File;
+  }
+  esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32-" CROSSINK_VERSION);
+  esp_http_client_set_header(client, "Cookie", cookie);
+
+  esp_err_t err = esp_http_client_perform(client);
+  if (err != ESP_OK) {
+    LOG_ERR("BOOKSTORE", "Download request failed: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    setError(BookStoreError::Network, "Download request failed");
+    return BookStoreError::Network;
+  }
+
+  const int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    LOG_ERR("BOOKSTORE", "Download status %d", status);
+    esp_http_client_cleanup(client);
+    setError(BookStoreError::File, "Download rejected by server");
+    return BookStoreError::File;
+  }
+
+  FsFile file;
+  if (!Storage.openFileForWrite("BOOKSTORE", destPath.c_str(), file)) {
+    esp_http_client_cleanup(client);
+    setError(BookStoreError::File, "Could not create destination file");
+    return BookStoreError::File;
+  }
+
+  const int64_t totalLen = esp_http_client_get_content_length(client);
+  if (progress) {
+    progress(0, totalLen > 0 ? static_cast<size_t>(totalLen) : 0);
+  }
+
+  char buffer[2048];
+  int readLen = 0;
+  size_t totalRead = 0;
+  bool cancelled = false;
+  while (!cancelled && (readLen = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
+    if (file.write(buffer, readLen) != static_cast<size_t>(readLen)) {
+      file.close();
+      Storage.deleteFile(destPath.c_str());
+      esp_http_client_cleanup(client);
+      setError(BookStoreError::File, "SD write failed");
+      return BookStoreError::File;
+    }
+    totalRead += readLen;
+    if (progress) {
+      progress(totalRead, totalLen > 0 ? static_cast<size_t>(totalLen) : 0);
+    }
+    if (cancelFlag && *cancelFlag) {
+      cancelled = true;
+    }
+  }
+
+  file.close();
+  esp_http_client_cleanup(client);
+
+  if (cancelled) {
+    Storage.deleteFile(destPath.c_str());
+    setError(BookStoreError::Cancelled, "Download cancelled");
+    return BookStoreError::Cancelled;
+  }
+
+  // Verify the downloaded file is not an HTML error page
+  FsFile verifyFile;
+  if (Storage.openFileForRead("BOOKSTORE", destPath.c_str(), verifyFile)) {
+    char header[16];
+    const size_t read = verifyFile.read(header, sizeof(header));
+    verifyFile.close();
+    if (read >= 6 && std::strncmp(header, "<html", 5) == 0) {
+      Storage.deleteFile(destPath.c_str());
+      setError(BookStoreError::Quota, "Download rejected by server");
+      return BookStoreError::Quota;
+    }
   }
 
   return BookStoreError::Ok;
