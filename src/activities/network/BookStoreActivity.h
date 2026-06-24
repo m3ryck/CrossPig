@@ -24,6 +24,8 @@ enum class BookStoreState {
   Error
 };
 
+enum class PendingOp { None, Login, Search, Download };
+
 class BookStoreActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   BookStoreState state = BookStoreState::MainMenu;
@@ -58,6 +60,12 @@ class BookStoreActivity final : public Activity {
   // WiFi management
   bool wifiActivated = false;
 
+  // Background network task
+  void* networkTaskHandle = nullptr;
+  PendingOp pendingOp = PendingOp::None;
+  volatile bool networkDone = false;
+  BookStoreError networkResult = BookStoreError::Ok;
+
   // Verification result
   char verificationMessage[128] = {0};
 
@@ -82,6 +90,9 @@ class BookStoreActivity final : public Activity {
   void ensureClient();
   void ensureWifiThen(std::function<void()> action);
   void buildDownloadPath();
+  void launchNetworkTask();
+  void checkNetworkCompletion();
+  static void networkTaskFunc(void* param);
 
   // Render helpers
   void renderMainMenu();

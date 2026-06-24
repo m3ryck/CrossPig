@@ -10,6 +10,10 @@
 #include <cstring>
 #include <string_view>
 
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+
 #include "network/WifiPowerSaveGuard.h"
 
 namespace {
@@ -54,47 +58,69 @@ wVD89qSTlnctLcZnIavjKsKUu1nA1iU0yYMdYepKR7lWbnwhdx3ewok=
 -----END CERTIFICATE-----
 )";
 
-bool postForm(const char* url, const char* body, std::string& outResponse, const char* cookie = nullptr) {
-  WifiPowerSaveGuard psGuard;
+// Percent-encode a value for use in an application/x-www-form-urlencoded body.
+// RFC 3986 unreserved chars (A-Z a-z 0-9 - _ . ~) are left as-is; everything
+// else is emitted as %XX.  Returns false if the output buffer would overflow.
+bool urlEncode(const char* in, char* out, size_t outLen) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  size_t i = 0;
+  for (const char* p = in; *p != '\0'; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                            c == '.' || c == '~';
+    if (unreserved) {
+      if (i + 1 >= outLen) return false;
+      out[i++] = static_cast<char>(c);
+    } else {
+      if (i + 3 >= outLen) return false;
+      out[i++] = '%';
+      out[i++] = kHex[(c >> 4) & 0x0F];
+      out[i++] = kHex[c & 0x0F];
+    }
+  }
+  out[i] = '\0';
+  return true;
+}
 
-  esp_http_client_config_t config = {};
-  config.url = url;
-  config.method = HTTP_METHOD_POST;
-  config.timeout_ms = 30000;
-  config.buffer_size = 2048;
-  config.buffer_size_tx = 1024;
-  config.cert_pem = R13_PEM;
-
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) return false;
-
-  esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+// Shared helper: set common request headers (auth, user-agent, optional cookie).
+static void setCommonHeaders(esp_http_client_handle_t client, const char* cookie,
+                             const char* userIdHeader, const char* userKeyHeader) {
+  esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32");
+  // Z-Library eapi uses remix-userid / remix-userkey as HTTP headers (with hyphen).
+  // Sending as cookies (with underscore) is kept as a fallback for older server configs.
+  if (userIdHeader && userIdHeader[0] != '\0') {
+    esp_http_client_set_header(client, "remix-userid", userIdHeader);
+  }
+  if (userKeyHeader && userKeyHeader[0] != '\0') {
+    esp_http_client_set_header(client, "remix-userkey", userKeyHeader);
+  }
   if (cookie && cookie[0] != '\0') {
     esp_http_client_set_header(client, "Cookie", cookie);
   }
-  esp_http_client_set_post_field(client, body, static_cast<int>(std::strlen(body)));
+}
 
-  esp_err_t err = esp_http_client_open(client, static_cast<int>(std::strlen(body)));
-  if (err != ESP_OK) {
-    LOG_ERR("BOOKSTORE", "HTTP POST open failed: %s", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    return false;
-  }
-
+// Shared response-reading helper used by both postForm and getRequest.
+static bool readBufferedResponse(esp_http_client_handle_t client, std::string& outResponse,
+                                 const char* logTag) {
   const int64_t contentLen = esp_http_client_fetch_headers(client);
   const int status = esp_http_client_get_status_code(client);
   if (status != 200) {
-    LOG_ERR("BOOKSTORE", "HTTP POST status %d", status);
-    
-    esp_http_client_cleanup(client);
+    LOG_ERR(logTag, "HTTP status %d", status);
     return false;
   }
-  if (contentLen < 0 || contentLen > 65536) {
-    LOG_ERR("BOOKSTORE", "HTTP POST response too large: %lld", contentLen);
-    
-    esp_http_client_cleanup(client);
+  // contentLen == -1 means Transfer-Encoding: chunked — valid, just unknown size.
+  // Cap buffered responses at 64 KiB to protect the heap.
+  if (contentLen > 65536) {
+    LOG_ERR(logTag, "HTTP response too large: %lld", contentLen);
     return false;
   }
+
+  // Pre-reserve to avoid repeated reallocations that fragment the heap.
+  const size_t reserveHint = (contentLen > 0 && contentLen <= 65536)
+                                 ? static_cast<size_t>(contentLen)
+                                 : 2048;
+  outResponse.reserve(reserveHint);
 
   char buffer[512];
   int readLen = 0;
@@ -102,17 +128,85 @@ bool postForm(const char* url, const char* body, std::string& outResponse, const
     buffer[readLen] = '\0';
     outResponse.append(buffer);
     if (outResponse.size() > 65536) {
-      LOG_ERR("BOOKSTORE", "HTTP POST response exceeded buffer limit");
-      
-      esp_http_client_cleanup(client);
+      LOG_ERR(logTag, "HTTP response exceeded buffer limit");
       outResponse.clear();
       return false;
     }
   }
-
-  esp_http_client_cleanup(client);
   return !outResponse.empty();
 }
+
+bool postForm(const char* url, const char* body, std::string& outResponse, const char* cookie = nullptr,
+              const char* userIdHeader = nullptr, const char* userKeyHeader = nullptr) {
+  WifiPowerSaveGuard psGuard;
+
+  esp_http_client_config_t config = {};
+  config.url = url;
+  config.method = HTTP_METHOD_POST;
+  config.timeout_ms = 30000;
+  config.buffer_size = 1024;
+  config.buffer_size_tx = 1024;
+  config.cert_pem = R13_PEM;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) return false;
+
+  esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+  setCommonHeaders(client, cookie, userIdHeader, userKeyHeader);
+  esp_http_client_set_post_field(client, body, static_cast<int>(std::strlen(body)));
+
+#ifdef ESP_PLATFORM
+  LOG_INF("BOOKSTORE", "POST heap: free=%u maxalloc=%u",
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
+  esp_err_t err = esp_http_client_open(client, static_cast<int>(std::strlen(body)));
+  if (err != ESP_OK) {
+    LOG_ERR("BOOKSTORE", "HTTP POST open failed: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  const bool ok = readBufferedResponse(client, outResponse, "BOOKSTORE");
+  esp_http_client_cleanup(client);
+  return ok;
+}
+
+// GET request — used for endpoints that return JSON via HTTP GET (e.g. /eapi/book/.../file).
+bool getRequest(const char* url, std::string& outResponse, const char* cookie = nullptr,
+                const char* userIdHeader = nullptr, const char* userKeyHeader = nullptr) {
+  WifiPowerSaveGuard psGuard;
+
+  esp_http_client_config_t config = {};
+  config.url = url;
+  config.method = HTTP_METHOD_GET;
+  config.timeout_ms = 30000;
+  config.buffer_size = 1024;
+  config.buffer_size_tx = 512;
+  config.cert_pem = R13_PEM;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) return false;
+
+  setCommonHeaders(client, cookie, userIdHeader, userKeyHeader);
+
+#ifdef ESP_PLATFORM
+  LOG_INF("BOOKSTORE", "GET heap: free=%u maxalloc=%u",
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
+  esp_err_t err = esp_http_client_open(client, 0);  // 0 = no request body
+  if (err != ESP_OK) {
+    LOG_ERR("BOOKSTORE", "HTTP GET open failed: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  const bool ok = readBufferedResponse(client, outResponse, "BOOKSTORE");
+  esp_http_client_cleanup(client);
+  return ok;
+}
+
 }  // namespace
 
 BookStoreClient::BookStoreClient() { lastErrorMessage[0] = '\0'; }
@@ -155,7 +249,13 @@ bool BookStoreClient::buildUrl(char* out, size_t outLen, const char* path) const
 
 bool BookStoreClient::buildSearchBody(char* out, size_t outLen, const char* query, uint32_t page) const {
   if (!query) return false;
-  const int n = std::snprintf(out, outLen, "message=%s&page=%u&limit=5&order=bestmatch", query, page);
+  // Percent-encode the query so special characters (spaces, &, +, etc.) are
+  // transmitted correctly in the application/x-www-form-urlencoded body.
+  char encodedQuery[384];
+  if (!urlEncode(query, encodedQuery, sizeof(encodedQuery))) {
+    return false;
+  }
+  const int n = std::snprintf(out, outLen, "message=%s&page=%u&limit=5&order=bestmatch", encodedQuery, page);
   return n > 0 && static_cast<size_t>(n) < outLen;
 }
 
@@ -189,11 +289,24 @@ BookStoreError BookStoreClient::login() {
     return BookStoreError::Network;
   }
 
-  char body[256];
-  const int bodyLen = std::snprintf(body, sizeof(body), "email=%s&password=%s", email, password);
-  if (bodyLen <= 0 || static_cast<size_t>(bodyLen) >= sizeof(body)) {
-    setError(BookStoreError::Auth, "Credentials too long");
-    return BookStoreError::Auth;
+  // Percent-encode credentials in an inner scope so the encoding buffers are
+  // released before postForm() — reducing peak stack usage for the background
+  // network task (4 KiB stack).
+  char body[448];
+  {
+    char encodedEmail[192];
+    char encodedPassword[192];
+    if (!urlEncode(email, encodedEmail, sizeof(encodedEmail)) ||
+        !urlEncode(password, encodedPassword, sizeof(encodedPassword))) {
+      setError(BookStoreError::Auth, "Credentials too long to encode");
+      return BookStoreError::Auth;
+    }
+    const int bodyLen =
+        std::snprintf(body, sizeof(body), "email=%s&password=%s", encodedEmail, encodedPassword);
+    if (bodyLen <= 0 || static_cast<size_t>(bodyLen) >= sizeof(body)) {
+      setError(BookStoreError::Auth, "Credentials too long");
+      return BookStoreError::Auth;
+    }
   }
 
   std::string response;
@@ -279,7 +392,7 @@ BookStoreError BookStoreClient::search(const char* query, uint32_t page, std::ve
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
   std::string response;
-  if (!postForm(url, body, response, cookie)) {
+  if (!postForm(url, body, response, cookie, userId, userKey)) {
     setError(BookStoreError::Network, "Search request failed");
     return BookStoreError::Network;
   }
@@ -403,8 +516,8 @@ BookStoreError BookStoreClient::resolveDownloadUrl(const BookStoreBook& book, st
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
   std::string response;
-  // GET request with cookie; reuse postForm but with empty body
-  if (!postForm(url, "", response, cookie)) {
+  // /eapi/book/<id>/<hash>/file is a GET endpoint — use getRequest, not postForm.
+  if (!getRequest(url, response, cookie, userId, userKey)) {
     setError(BookStoreError::Network, "Failed to resolve download link");
     return BookStoreError::Network;
   }
@@ -476,6 +589,13 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     return BookStoreError::File;
   }
   esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32-" CROSSINK_VERSION);
+  // Send auth as both HTTP headers (primary) and Cookie (fallback for older configs).
+  if (userId[0] != '\0') {
+    esp_http_client_set_header(client, "remix-userid", userId);
+  }
+  if (userKey[0] != '\0') {
+    esp_http_client_set_header(client, "remix-userkey", userKey);
+  }
   esp_http_client_set_header(client, "Cookie", cookie);
 
   esp_err_t err = esp_http_client_open(client, 0);
