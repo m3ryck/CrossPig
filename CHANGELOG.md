@@ -1,4 +1,48 @@
 # Changelog
+## [Unreleased]
+
+### Added
+- Optimized EPUBs now store location metadata at `META-INF/x-locations.json`.
+- X3 SD-card writes now use the RTC for file timestamps when the clock is available.
+
+### Changed
+
+### Fixed
+
+## [v1.3.4] - 2026-06-20
+
+### Added
+- File Browser now indexes large SD-card folders so directories with many books can be browsed without loading every filename into memory at once.
+- EPUB text clipping with saved highlights, clipping lists, and Kindle-style `/My Clippings.txt` export.
+- `Create Clipping` is now available as a reader shortcut for short/long Power, long-press Menu, and long-press Back actions.
+- Per-book EPUB options for font, layout, styling, reading aids, and render modes, including `CrossInk Default`, `Balanced`, and `Light` modes for difficult books.
+
+### Changed
+- The EPUB reader menu now splits the growing menu into 3 screens, labels per-book settings as `Book Options`, and avoids showing duplicate `Orientation` controls.
+- The `Inverted` sleep cover filter now flips Minimal and Reading Stats sleep screens to black text on a white background.
+- OTA update checks now use a stable CrossInk manifest endpoint for S3-hosted release assets, and retired build variants now resolve to the `tiny` firmware update.
+
+### Fixed
+- Calibre Wireless transfer status no longer stacks the last received-file message on top of the upload percentage.
+- X3 Tilt Direction now labels left/right choices as `Left-Right` and `Right-Left`, with existing left/right preferences migrated to keep the same physical tilt behavior.
+- EPUB layout now honors publisher page-break CSS, avoids stretching justified spaces before closing punctuation, and keeps large CSS rule sets in a smaller disk-backed lookup cache.
+- EPUB first-open conversion now uses more compact OPF manifest lookups and streams cover-wrapper parsing to avoid large temporary heap buffers on books with huge manifests.
+- EPUB chapters that run out of memory during full CrossInk layout now retry with `Balanced` and then `Light` rendering before showing a low-memory error, and save the first successful fallback for that book.
+- EPUB low-memory layout errors now suggest turning off Bionic Reading or Guide Dots when either reading aid is adding memory pressure.
+- EPUB next-chapter pre-indexing now uses the same render-mode fallbacks as visible chapter loading when layout runs low on memory.
+- EPUB reader font-size changes now restore the current chapter position by content instead of jumping far backward after re-indexing.
+- Reading Stats now use the reader's last live book time-left estimate instead of showing a separate fallback estimate.
+- Per-book reading stats now migrate compatible legacy `stats.bin` files into the `stats_v5.bin` flow instead of resetting when only the old filename exists.
+- Lyra Carousel Home menu rendering now avoids extra label allocations that could crash tiny builds under low memory.
+- EPUB image-heavy chapters no longer risk a reboot while saving their reading cache under low memory.
+- TXT readers now stay open when pressing a page-turn button at the end of the file.
+- Long-press reader shortcuts that open another screen no longer close or confirm it again when releasing the shortcut button.
+- RoundedRaff's header battery icon and percentage now sit lower to avoid clipping at the top edge.
+- Lyra Carousel now keeps the Home header current when rendering the menu or restoring cached carousel frames, preventing stale battery and clock values while navigating between books.
+- Web file manager multi-delete now handles larger selections without failing after a small batch.
+- Portuguese EPUBs now use Portuguese hyphenation rules instead of leaving long words unhyphenated when Hyphenation is enabled.
+- Progressive JPEG EPUB covers now render more smoothly in generated cover and thumbnail BMP assets.
+- EPUB section layout now flushes long text runs earlier when Bionic Reading or Guide Dots are enabled, reducing low-memory failures on difficult books.
 
 ## [Unreleased]
 

@@ -12,7 +12,9 @@
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "activities/reader/EpubReaderActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -234,6 +236,26 @@ void RecentBooksActivity::showBookActionMenu(const size_t bookIndex, const bool 
             reloadAfterBookAction();
             return;
           }
+          case FileBrowserAction::EpubRenderMode: {
+            const uint8_t currentIndex =
+                BookActions::epubRenderModeDisplayIndex(EpubReaderActivity::loadBookRenderMode(book.path));
+            startActivityForResult(
+                std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "RecentEpubRenderModeSelect",
+                                                          StrId::STR_EPUB_RENDER_MODE,
+                                                          BookActions::epubRenderModeOptions(), currentIndex),
+                [this, book](const ActivityResult& selectionResult) {
+                  if (!selectionResult.isCancelled) {
+                    const auto* selection = std::get_if<OptionSelectionResult>(&selectionResult.data);
+                    if (selection != nullptr &&
+                        !EpubReaderActivity::saveBookRenderMode(
+                            book.path, BookActions::epubRenderModeForDisplayIndex(selection->index))) {
+                      LOG_ERR("RBA", "Failed to save render mode for: %s", book.path.c_str());
+                    }
+                  }
+                  reloadAfterBookAction();
+                });
+            return;
+          }
           case FileBrowserAction::RemoveFromRecents:
             promptRemoveBook(book.path, book.title);
             return;
@@ -241,6 +263,10 @@ void RecentBooksActivity::showBookActionMenu(const size_t bookIndex, const bool 
           case FileBrowserAction::UnpinFavorite:
           case FileBrowserAction::SetSleepFolder:
           case FileBrowserAction::ClearSleepFolder:
+          case FileBrowserAction::ViewBookmarks:
+          case FileBrowserAction::ViewClippings:
+          case FileBrowserAction::DeleteBookmarks:
+          case FileBrowserAction::DeleteClippings:
             return;
         }
       });
