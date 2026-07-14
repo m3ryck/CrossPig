@@ -2506,6 +2506,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         KOReaderPosition localKoPos = ProgressMapper::toKOReader(epub, localPos);
         const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
         std::string localChapterName = (tocIdx >= 0) ? epub->getTocItem(tocIdx).title : "";
+        std::string bookTitle = epub->getTitle();
+        std::string bookAuthor = epub->getAuthor();
         const std::string savedEpubPath = epub->getPath();
 
         // Persist current position so the reader resumes at the right page on return.
@@ -2532,7 +2534,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         pauseReadingPaceTimer("sync_progress");
         activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
             renderer, mappedInput, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(localKoPos),
-            std::move(localChapterName), paragraphIndex));
+            std::move(localChapterName), std::move(bookTitle), std::move(bookAuthor), paragraphIndex));
       }
       break;
     }
@@ -4061,7 +4063,11 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
     }
 
     ClippingPageMatch match;
-    if (findClippingStoredRangeOnPage(page, clipping, currentPage, currentPageCount, match)) {
+    bool found = findClippingStoredRangeOnPage(page, clipping, currentPage, currentPageCount, match);
+    if (!found) {
+      found = findClippingTextOnPage(page, clipping, match);
+    }
+    if (found) {
       matches[matchCount++] = match;
       if (matchCount >= matches.size()) {
         break;

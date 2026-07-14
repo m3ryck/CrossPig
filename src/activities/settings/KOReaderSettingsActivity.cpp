@@ -7,15 +7,19 @@
 
 #include "KOReaderAuthActivity.h"
 #include "KOReaderCredentialStore.h"
+#include "CrossSyncCredentialStore.h"
 #include "MappedInputManager.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-constexpr int MENU_ITEMS = 5;
+constexpr int MENU_ITEMS = 10;
 const StrId menuNames[MENU_ITEMS] = {StrId::STR_USERNAME, StrId::STR_PASSWORD, StrId::STR_SYNC_SERVER_URL,
-                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_AUTHENTICATE};
+                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_AUTHENTICATE,
+                                     StrId::STR_CROSSSYNC_ENABLE_HIGHLIGHTS, StrId::STR_CROSSSYNC_WEBDAV_URL,
+                                     StrId::STR_CROSSSYNC_ROOT_PATH, StrId::STR_CROSSSYNC_USERNAME,
+                                     StrId::STR_CROSSSYNC_PASSWORD};
 }  // namespace
 
 void KOReaderSettingsActivity::onEnter() {
@@ -104,6 +108,55 @@ void KOReaderSettingsActivity::handleSelection() {
       return;
     }
     startActivityForResult(std::make_unique<KOReaderAuthActivity>(renderer, mappedInput), [](const ActivityResult&) {});
+  } else if (selectedIndex == 5) {
+    CROSSSYNC_STORE.setEnabled(!CROSSSYNC_STORE.isEnabled());
+    CROSSSYNC_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 6) {
+    const std::string currentUrl = CROSSSYNC_STORE.getServerUrl();
+    const std::string prefillUrl = currentUrl.empty() ? "https://" : currentUrl;
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_CROSSSYNC_WEBDAV_URL),
+                                                                   prefillUrl, 160, InputType::Url),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               const std::string urlToSave =
+                                   (kb.text == "https://" || kb.text == "http://") ? "" : kb.text;
+                               CROSSSYNC_STORE.setServerUrl(urlToSave);
+                               CROSSSYNC_STORE.saveToFile();
+                             }
+                           });
+  } else if (selectedIndex == 7) {
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_CROSSSYNC_ROOT_PATH),
+                                                                   CROSSSYNC_STORE.getRootPath(), 96, InputType::Text),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               CROSSSYNC_STORE.setRootPath(kb.text);
+                               CROSSSYNC_STORE.saveToFile();
+                             }
+                           });
+  } else if (selectedIndex == 8) {
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_CROSSSYNC_USERNAME),
+                                                                   CROSSSYNC_STORE.getUsername(), 64, InputType::Text),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               CROSSSYNC_STORE.setCredentials(kb.text, CROSSSYNC_STORE.getPassword());
+                               CROSSSYNC_STORE.saveToFile();
+                             }
+                           });
+  } else if (selectedIndex == 9) {
+    startActivityForResult(
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_CROSSSYNC_PASSWORD),
+                                                CROSSSYNC_STORE.getPassword(), 96, InputType::Password),
+        [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto& kb = std::get<KeyboardResult>(result.data);
+            CROSSSYNC_STORE.setCredentials(CROSSSYNC_STORE.getUsername(), kb.text);
+            CROSSSYNC_STORE.saveToFile();
+          }
+        });
   }
 }
 
@@ -137,6 +190,18 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
                                                                                   : std::string(tr(STR_BINARY));
         } else if (index == 4) {
           return KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
+        } else if (index == 5) {
+          return CROSSSYNC_STORE.isEnabled() ? std::string(tr(STR_STATE_ON)) : std::string(tr(STR_STATE_OFF));
+        } else if (index == 6) {
+          auto serverUrl = CROSSSYNC_STORE.getServerUrl();
+          return serverUrl.empty() ? std::string(tr(STR_NOT_SET)) : serverUrl;
+        } else if (index == 7) {
+          return CROSSSYNC_STORE.getRootPath();
+        } else if (index == 8) {
+          auto username = CROSSSYNC_STORE.getUsername();
+          return username.empty() ? std::string(tr(STR_NOT_SET)) : username;
+        } else if (index == 9) {
+          return CROSSSYNC_STORE.getPassword().empty() ? std::string(tr(STR_NOT_SET)) : std::string("******");
         }
         return std::string(tr(STR_NOT_SET));
       },

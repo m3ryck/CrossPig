@@ -26,6 +26,7 @@ The main data directory is `.crosspoint` on the SD card. It stores render caches
 ├── wifi.json               # Saved Wi-Fi networks
 ├── opds.json               # Saved OPDS servers
 ├── koreader.json           # KOReader sync credentials
+├── crosssync.json          # CrossSync WebDAV settings for highlight sync
 ├── bookmarks/              # Bookmark files, one per book
 ├── clippings/              # EPUB clipping/highlight files, one per book
 ├── home_carousel_cache.bin # Lyra Carousel home-screen snapshot cache
@@ -69,6 +70,11 @@ appends a Kindle-style text export to `/My Clippings.txt` on the SD-card root;
 that export is human-readable and append-only, so deleting a clipping in the UI
 removes the in-app saved clipping but does not rewrite old text already exported
 to `/My Clippings.txt`.
+
+CrossSync highlight sync stores its WebDAV settings separately in
+`/.crosspoint/crosssync.json`. It does not add another local highlight cache;
+sync import/export uses the current book's clipping file and the configured
+remote WebDAV JSON file.
 
 Cache data is cleared by supported CrossInk delete/move flows. If you remove or rename books outside CrossInk by editing the SD card directly, old cache folders may remain until you clear reading cache.
 

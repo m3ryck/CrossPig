@@ -2,6 +2,7 @@
 ## [Unreleased]
 
 ### Added
+- CrossSync highlight sync now follows the existing Progress Sync direction choice and uses separate WebDAV credentials for absolute upload/download replacement.
 - Optimized EPUBs now store location metadata at `META-INF/x-locations.json`.
 - X3 SD-card writes now use the RTC for file timestamps when the clock is available.
 

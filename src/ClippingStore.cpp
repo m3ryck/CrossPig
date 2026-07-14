@@ -141,6 +141,38 @@ bool ClippingStore::hasClippingForPage(const uint16_t spineIndex, const uint16_t
   });
 }
 
+bool ClippingStore::replaceAllForSync(const std::vector<Clipping>& incoming) {
+  if (incoming.size() > CLIPPING_MAX_PER_BOOK) {
+    LOG_ERR("CLIP", "CrossSync clipping replace exceeds limit: %zu", incoming.size());
+    return false;
+  }
+
+  clippings.clear();
+  if (clippings.capacity() < incoming.size()) {
+    clippings.reserve(incoming.size());
+  }
+
+  for (const auto& item : incoming) {
+    Clipping clipping;
+    clipping.spineIndex = item.spineIndex;
+    clipping.startPage = item.startPage;
+    clipping.endPage = item.endPage;
+    clipping.pageCount = std::max<uint16_t>(1, item.pageCount);
+    clipping.startWordIndex = item.startWordIndex;
+    clipping.endWordIndex = item.endWordIndex;
+    clipping.wordCount = item.wordCount;
+    clipping.paragraphIndex = item.paragraphIndex;
+    clipping.timestamp = item.timestamp;
+    copyBounded(clipping.chapterTitle, sizeof(clipping.chapterTitle), item.chapterTitle);
+    clipping.text.assign(item.text.data(), std::min(item.text.size(), CLIPPING_TEXT_MAX));
+    clippings.push_back(std::move(clipping));
+  }
+
+  dirty = true;
+  saveToFile();
+  return true;
+}
+
 void ClippingStore::saveToFile() {
   if (!dirty) return;
   if (writeToFile()) {

@@ -7,6 +7,7 @@
 
 #include "KOReaderSyncClient.h"
 #include "ProgressMapper.h"
+#include "CrossSyncTypes.h"
 #include "activities/Activity.h"
 
 /**
@@ -23,10 +24,13 @@ class KOReaderSyncActivity final : public Activity {
  public:
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                 int currentSpineIndex, int currentPage, int totalPagesInSpine,
-                                KOReaderPosition localKoPos, std::string localChapterName,
+                                KOReaderPosition localKoPos, std::string localChapterName, std::string bookTitle,
+                                std::string bookAuthor,
                                 std::optional<uint16_t> currentParagraphIndex = std::nullopt)
       : Activity("KOReaderSync", renderer, mappedInput),
         epubPath(epubPath),
+        bookTitle(std::move(bookTitle)),
+        bookAuthor(std::move(bookAuthor)),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
@@ -59,6 +63,8 @@ class KOReaderSyncActivity final : public Activity {
 
   std::shared_ptr<Epub> epub;  // null until lazy-loaded after TLS in performSync()
   std::string epubPath;
+  std::string bookTitle;
+  std::string bookAuthor;
   std::string localChapterName;
   int currentSpineIndex;
   int currentPage;
@@ -90,6 +96,7 @@ class KOReaderSyncActivity final : public Activity {
   void onWifiSelectionComplete(bool success);
   void performSync();
   void performUpload();
+  bool performCrossSync(CrossSyncDirection direction);
   bool consumeInitialConfirmRelease();
   void ensureEpubLoaded();
   void saveProgressAndReturn(const CrossPointPosition& position);

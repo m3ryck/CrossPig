@@ -12,10 +12,13 @@
 #include <cassert>
 
 #include "CrossPointSettings.h"
+#include "CrossSyncCredentialStore.h"
+#include "CrossSyncHighlightService.h"
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
+#include "ClippingStore.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
 #include "SdCardFontSystem.h"
@@ -311,10 +314,9 @@ void KOReaderSyncActivity::performUpload() {
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
 
-  // Drop the radio while user reads the result; full teardown happens at silent reboot.
-  wifiOff();
-
   if (result != KOReaderSyncClient::OK) {
+    // Drop the radio while user reads the result; full teardown happens at silent reboot.
+    wifiOff();
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;
@@ -324,11 +326,51 @@ void KOReaderSyncActivity::performUpload() {
     return;
   }
 
+  if (!performCrossSync(CrossSyncDirection::UploadLocal)) {
+    // Drop the radio while user reads the result; full teardown happens at silent reboot.
+    wifiOff();
+    requestUpdate(true);
+    return;
+  }
+
+  // Drop the radio while user reads the result; full teardown happens at silent reboot.
+  wifiOff();
+
   {
     RenderLock lock(*this);
     state = UPLOAD_COMPLETE;
   }
   requestUpdate(true);
+}
+
+bool KOReaderSyncActivity::performCrossSync(const CrossSyncDirection direction) {
+  if (!CROSSSYNC_STORE.isEnabled()) {
+    return true;
+  }
+
+  {
+    RenderLock lock(*this);
+    statusMessage = direction == CrossSyncDirection::PullRemote ? tr(STR_FETCH_PROGRESS) : tr(STR_UPLOAD_PROGRESS);
+  }
+
+  ensureEpubLoaded();
+  const auto result = CrossSyncHighlightService::sync(direction, documentHash, KOREADER_STORE.getMatchMethod(), epub,
+                                                     currentSpineIndex, totalPagesInSpine);
+  if (result == CrossSyncHighlightService::Result::Skipped || result == CrossSyncHighlightService::Result::OK ||
+      result == CrossSyncHighlightService::Result::RemoteMissingAppliedAsEmpty) {
+    LOG_DBG("CrossSync", "%s", CrossSyncHighlightService::resultString(result));
+    return true;
+  }
+
+  char message[160];
+  const std::string detail = CrossSyncHighlightService::resultDetail(result);
+  snprintf(message, sizeof(message), tr(STR_CROSSSYNC_FAILED_FORMAT), detail.c_str());
+  {
+    RenderLock lock(*this);
+    state = SYNC_FAILED;
+    statusMessage = message;
+  }
+  return false;
 }
 
 void KOReaderSyncActivity::onEnter() {
@@ -348,6 +390,8 @@ void KOReaderSyncActivity::onEnter() {
   wifiActivated = true;
 
   // Check if already connected (e.g. from settings page auth)
+  CLIPPINGS.loadForBook(epubPath, bookTitle, bookAuthor, "epub");
+
   if (WiFi.status() == WL_CONNECTED) {
     LOG_DBG("KOSync", "Already connected to WiFi");
     onWifiSelectionComplete(true);
@@ -362,6 +406,8 @@ void KOReaderSyncActivity::onEnter() {
 
 void KOReaderSyncActivity::onExit() {
   Activity::onExit();
+
+  CLIPPINGS.unload();
 
   if (wifiActivated) {
     wifiOff();
@@ -525,6 +571,10 @@ void KOReaderSyncActivity::loop() {
 
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (selectedOption == 0) {
+        if (!performCrossSync(CrossSyncDirection::PullRemote)) {
+          requestUpdate(true);
+          return;
+        }
         saveProgressAndReturn(remotePosition);
       } else if (selectedOption == 1) {
         // Upload local progress

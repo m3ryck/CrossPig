@@ -27,4 +27,14 @@ class ChapterXPathResolver {
    * An empty string means parsing failed or the location could not be resolved.
    */
   static std::string findXPathForProgress(const std::shared_ptr<Epub>& epub, int spineIndex, float intraSpineProgress);
+
+  /**
+   * Resolve highlighted text inside a paragraph to a KOReader-compatible xpointer range.
+   *
+   * Returns true when the text was found in the target paragraph and fills pos0/pos1
+   * with text-node offsets, for example:
+   * /body/DocFragment[8]/body/div[2]/p[4]/text().12
+   */
+  static bool findXPathRangeForText(const std::shared_ptr<Epub>& epub, int spineIndex, uint16_t paragraphIndex,
+                                    const std::string& text, std::string& pos0, std::string& pos1);
 };

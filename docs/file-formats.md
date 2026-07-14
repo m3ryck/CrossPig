@@ -192,6 +192,55 @@ book is renamed or moved outside CrossInk, the path hash changes, so the old
 clipping file may no longer be associated with the book until the file is moved
 back or the clipping store is migrated.
 
+## CrossSync highlight JSON
+
+CrossSync stores highlight sync payloads remotely on WebDAV. The local source of
+truth remains the clipping file described above; there is no extra local
+CrossSync highlight cache.
+
+Remote path layout:
+
+```text
+<rootPath>/v1/highlights/filename/<document_hash>.json
+<rootPath>/v1/highlights/binary/<document_hash>.json
+```
+
+`document_hash` uses the same KOReader-compatible matching strategy selected for
+Progress Sync. `filename` hashes only the file name. `binary` hashes sampled file
+contents.
+
+Version 1 payload:
+
+```json
+{
+  "format": "crosssync.highlights",
+  "version": 1,
+  "book": "document-md5",
+  "match_type": "filename",
+  "source": "crossink",
+  "highlights": [
+    {
+      "spine": 0,
+      "start_page": 3,
+      "end_page": 3,
+      "page_count": 22,
+      "start_word": 4,
+      "end_word": 17,
+      "word_count": 14,
+      "paragraph": 12,
+      "chapter": "Chapter title",
+      "text": "Highlighted text",
+      "created_at": 1712345678
+    }
+  ]
+}
+```
+
+The sync direction is absolute and comes from the existing Progress Sync choice:
+applying remote progress also replaces local highlights from the remote JSON;
+uploading local progress also replaces the remote JSON from local highlights.
+There is no merge, tombstone, or conflict history.
+
 ## `stats_v5.bin`
 
 ### Version 5

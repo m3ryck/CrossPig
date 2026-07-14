@@ -53,6 +53,7 @@ class ClippingStore {
   bool hasClippings() const { return !clippings.empty(); }
   bool hasClippingForPage(uint16_t spineIndex, uint16_t page) const;
   const std::vector<Clipping>& getClippings() const { return clippings; }
+  bool replaceAllForSync(const std::vector<Clipping>& incoming);
 
   static bool hasAnyClippings();
   static bool getAllClippedBooks(std::vector<ClippedBookEntry>& out);

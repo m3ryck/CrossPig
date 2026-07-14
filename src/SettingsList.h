@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "CrossSyncCredentialStore.h"
 #include "KOReaderCredentialStore.h"
 #include "activities/settings/SettingsActivity.h"
 
@@ -615,6 +616,43 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
           KOREADER_STORE.saveToFile();
         },
         "koMatchMethod", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicEnum(
+        StrId::STR_CROSSSYNC_ENABLE_HIGHLIGHTS, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
+        [] { return CROSSSYNC_STORE.isEnabled() ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0); },
+        [](uint8_t v) {
+          CROSSSYNC_STORE.setEnabled(v != 0);
+          CROSSSYNC_STORE.saveToFile();
+        },
+        "crossSyncEnabled", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicString(
+        StrId::STR_CROSSSYNC_WEBDAV_URL, [] { return CROSSSYNC_STORE.getServerUrl(); },
+        [](const std::string& v) {
+          CROSSSYNC_STORE.setServerUrl(v);
+          CROSSSYNC_STORE.saveToFile();
+        },
+        "crossSyncWebDavUrl", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicString(
+        StrId::STR_CROSSSYNC_ROOT_PATH, [] { return CROSSSYNC_STORE.getRootPath(); },
+        [](const std::string& v) {
+          CROSSSYNC_STORE.setRootPath(v);
+          CROSSSYNC_STORE.saveToFile();
+        },
+        "crossSyncRootPath", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicString(
+        StrId::STR_CROSSSYNC_USERNAME, [] { return CROSSSYNC_STORE.getUsername(); },
+        [](const std::string& v) {
+          CROSSSYNC_STORE.setCredentials(v, CROSSSYNC_STORE.getPassword());
+          CROSSSYNC_STORE.saveToFile();
+        },
+        "crossSyncUsername", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicString(
+        StrId::STR_CROSSSYNC_PASSWORD, [] { return CROSSSYNC_STORE.getPassword(); },
+        [](const std::string& v) {
+          CROSSSYNC_STORE.setCredentials(CROSSSYNC_STORE.getUsername(), v);
+          CROSSSYNC_STORE.saveToFile();
+        },
+        "crossSyncPassword", StrId::STR_KOREADER_SYNC)
+            .withObfuscated());
 
     // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
     add(SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
