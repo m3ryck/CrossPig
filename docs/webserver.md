@@ -32,9 +32,14 @@ networks or in hotspot mode when you control who is connected.
 ## Join Network Mode
 
 1. Select **Join Network**.
-2. Pick a 2.4 GHz Wi-Fi network from the scan results.
-3. Enter the password if prompted.
-4. Save credentials if you want the reader to reconnect automatically next time.
+2. If you have saved Wi-Fi credentials, CrossPoint first tries the last
+   connected network, then other visible saved networks in signal-strength
+   order. Press **Back** to cancel or **Confirm** to stop auto-connect and show
+   the network list.
+3. If the network list is shown, pick a 2.4 GHz Wi-Fi network from the scan
+   results.
+4. Enter the password if prompted.
+5. Save credentials if you want the reader to reconnect automatically next time.
 
 After connection, the reader shows:
 
@@ -105,7 +110,9 @@ too large or memory-sensitive for the device.
 The default optimization path converts images for e-ink reading, limits them to
 the target device size, saves them as JPEG at 85% quality, and applies basic EPUB
 repairs such as safer SVG handling. Advanced Mode lets you pick the target
-device, JPEG quality, image split or rotation handling, and split overlap.
+device, JPEG quality, image split or rotation handling, split overlap, and
+whether EPUB sections over 2,000 visible words should be split into smaller
+reader sections.
 
 Optimization changes the EPUB file contents before upload. Note: if you use
 hash-based KOReader sync, this will break the syncing because it changes the epub

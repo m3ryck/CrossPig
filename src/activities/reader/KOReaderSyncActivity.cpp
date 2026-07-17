@@ -121,6 +121,7 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   }
 
   LOG_DBG("KOSync", "WiFi connected, starting sync");
+  sdFontSystem.releaseForNetwork(renderer);
 
   {
     RenderLock lock(*this);
@@ -302,12 +303,28 @@ void KOReaderSyncActivity::performUpload() {
     return;
   }
 
+  if (epub) {
+    epub.reset();
+    LOG_DBG("KOSync", "Released epub before upload (heap: %u)", (unsigned)ESP.getFreeHeap());
+  }
+
   // localProgress was pre-computed in EpubReaderActivity before the Epub was released.
   KOReaderProgress progress;
   progress.document = documentHash;
   progress.progress = localProgress.xpath;
   progress.percentage = localProgress.percentage;
   progress.device = SETTINGS.getEffectiveDeviceName();
+
+  // Optionally include document metadata (KOReader PR #15306)
+  if (KOREADER_STORE.getSendMetadata()) {
+    KOReaderMetadata meta;
+    // Extract filename from path
+    const auto lastSlash = epubPath.rfind('/');
+    meta.filename = (lastSlash != std::string::npos) ? epubPath.substr(lastSlash + 1) : epubPath;
+    meta.title = epub->getTitle();
+    meta.authors = epub->getAuthor();
+    progress.metadata = std::move(meta);
+  }
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
 

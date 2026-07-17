@@ -17,6 +17,7 @@
 #include "CrossPointState.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/BookReadingStats.h"
+#include "activities/reader/EpubReaderActivity.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -24,22 +25,40 @@
 #include "util/BookMoveUtils.h"
 
 namespace BookActions {
+namespace {
+
+bool hasReadingStats(const std::string& path) {
+  return FsHelpers::hasEpubExtension(path) || FsHelpers::hasXtcExtension(path);
+}
+
+std::string bookStatsCachePath(const std::string& path) {
+  if (FsHelpers::hasEpubExtension(path)) {
+    return Epub(path, "/.crosspoint").getCachePath();
+  }
+  if (FsHelpers::hasXtcExtension(path)) {
+    return Xtc(path, "/.crosspoint").getCachePath();
+  }
+  return "";
+}
+
+}  // namespace
 
 std::vector<FileBrowserActionActivity::MenuItem> buildBookActionItems(const std::string& fullPath,
                                                                       const bool includeRemoveFromRecents) {
   std::vector<FileBrowserActionActivity::MenuItem> items;
-  items.reserve(includeRemoveFromRecents ? 6 : 5);
+  items.reserve(includeRemoveFromRecents ? 7 : 6);
   items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
   if (hasClearableBookCache(fullPath)) {
     items.push_back({FileBrowserAction::DeleteCache, StrId::STR_DELETE_CACHE});
   }
   if (FsHelpers::hasEpubExtension(fullPath)) {
     items.push_back({FileBrowserAction::EpubRenderMode, StrId::STR_EPUB_RENDER_MODE});
-    items.push_back({FileBrowserAction::DeleteStats, StrId::STR_DELETE_BOOK_STATS});
+    items.push_back({FileBrowserAction::ResetReaderSettings, StrId::STR_RESET_BOOK_READER_SETTINGS});
   }
-  if (FsHelpers::hasEpubExtension(fullPath)) {
+  if (hasReadingStats(fullPath)) {
+    items.push_back({FileBrowserAction::DeleteStats, StrId::STR_DELETE_BOOK_STATS});
     items.push_back({FileBrowserAction::ToggleCompleted,
-                     isEpubCompleted(fullPath) ? StrId::STR_MARK_UNFINISHED : StrId::STR_MARK_FINISHED});
+                     isBookCompleted(fullPath) ? StrId::STR_MARK_UNFINISHED : StrId::STR_MARK_FINISHED});
   }
   if (includeRemoveFromRecents) {
     items.push_back({FileBrowserAction::RemoveFromRecents, StrId::STR_REMOVE_FROM_RECENTS_ACTION});
@@ -72,11 +91,18 @@ bool clearBookCache(const std::string& fullPath) {
 }
 
 bool deleteBookStats(const std::string& fullPath) {
+  const std::string cachePath = bookStatsCachePath(fullPath);
+  if (cachePath.empty()) {
+    return false;
+  }
+  return BookReadingStats::remove(cachePath);
+}
+
+bool resetBookReaderSettings(const std::string& fullPath) {
   if (!FsHelpers::hasEpubExtension(fullPath)) {
     return false;
   }
-  const Epub epub(fullPath, "/.crosspoint");
-  return BookReadingStats::remove(epub.getCachePath());
+  return EpubReaderActivity::resetBookReaderSettings(fullPath);
 }
 
 std::vector<std::string> epubRenderModeOptions() {
@@ -112,20 +138,42 @@ std::string confirmationHeading(const StrId actionLabelId) {
   return std::string(tr(STR_CONFIRM)) + ": " + std::string(I18N.get(actionLabelId));
 }
 
-bool isEpubCompleted(const std::string& fullPath) {
-  const Epub epub(fullPath, "/.crosspoint");
-  return BookReadingStats::load(epub.getCachePath()).isCompleted;
+bool isBookCompleted(const std::string& fullPath) {
+  const std::string cachePath = bookStatsCachePath(fullPath);
+  return !cachePath.empty() && BookReadingStats::load(cachePath).isCompleted;
 }
 
-bool toggleEpubCompleted(const std::string& fullPath, const std::string& displayName, bool& completed) {
-  if (!FsHelpers::hasEpubExtension(fullPath)) {
+bool toggleBookCompleted(const std::string& fullPath, const std::string& displayName, bool& completed) {
+  const bool isEpub = FsHelpers::hasEpubExtension(fullPath);
+  const bool isXtc = FsHelpers::hasXtcExtension(fullPath);
+  if (!isEpub && !isXtc) {
     return false;
   }
 
   Epub epub(fullPath, "/.crosspoint");
-  epub.setupCacheDir();
+  Xtc xtc(fullPath, "/.crosspoint");
+  std::string cachePath;
+  std::string title;
+  std::string author;
+  std::string thumbPath;
+  if (isEpub) {
+    epub.setupCacheDir();
+    cachePath = epub.getCachePath();
+    title = epub.getTitle();
+    author = epub.getAuthor();
+    thumbPath = epub.getThumbBmpPath();
+  } else {
+    if (!xtc.load()) {
+      return false;
+    }
+    xtc.setupCacheDir();
+    cachePath = xtc.getCachePath();
+    title = xtc.getTitle();
+    author = xtc.getAuthor();
+    thumbPath = xtc.getThumbBmpPath();
+  }
 
-  BookReadingStats stats = BookReadingStats::load(epub.getCachePath());
+  BookReadingStats stats = BookReadingStats::load(cachePath);
   completed = !stats.isCompleted;
   stats.isCompleted = completed;
   if (completed && !stats.finishedDateManual) {
@@ -142,22 +190,20 @@ bool toggleEpubCompleted(const std::string& fullPath, const std::string& display
     globalStats.completedBooks--;
   }
 
-  stats.save(epub.getCachePath());
+  stats.save(cachePath);
   globalStats.save();
 
   if (SETTINGS.removeReadBooksFromRecents) {
     if (completed) {
       RECENT_BOOKS.removeByPath(fullPath);
     } else {
-      RECENT_BOOKS.addOrUpdateBook(fullPath, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath());
+      RECENT_BOOKS.addOrUpdateBook(fullPath, title, author, thumbPath);
     }
   }
 
-  if (completed && SETTINGS.moveFinishedToReadFolder && fullPath.rfind("/Read/", 0) != 0) {
+  if (isEpub && completed && SETTINGS.moveFinishedToReadFolder && fullPath.rfind("/Read/", 0) != 0) {
     const std::string oldCachePath = epub.getCachePath();
     const std::string dstPath = BookMoveUtils::buildReadFolderDestination(fullPath);
-    const std::string title = epub.getTitle();
-    const std::string author = epub.getAuthor();
     LOG_INF("BookActions", "Moving completed epub: %s -> %s", fullPath.c_str(), dstPath.c_str());
     if (!Storage.rename(fullPath.c_str(), dstPath.c_str())) {
       LOG_ERR("BookActions", "Failed to move book to 'Read' folder");

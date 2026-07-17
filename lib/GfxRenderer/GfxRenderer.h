@@ -104,6 +104,12 @@ class GfxRenderer {
   void drawPixelDither(int x, int y) const;
   template <Color color>
   void fillArc(int maxRadius, int cx, int cy, int xDir, int yDir) const;
+  // Byte-aligned, orientation-specialized rectangle fill. Rotates the rect's
+  // two opposing corners into physical-framebuffer space once, then walks each
+  // physical row with head-mask / middle memset / tail-mask byte writes — no
+  // per-pixel rotation, no per-pixel RMW.
+  template <Color color>
+  void fillRectImpl(int x, int y, int width, int height) const;
 
  public:
   explicit GfxRenderer(HalDisplay& halDisplay)
@@ -153,7 +159,9 @@ class GfxRenderer {
   void ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F) const;
   void ensureSdCardFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
                              uint8_t styleMask = 0x0F) const;
-  bool releaseSdCardFontForLowMemory(int fontId) const;
+  void ensureSdCardFontReady(int fontId, const uint32_t* codepoints, uint32_t cpCount, bool includeSpace,
+                             bool includeHyphen, uint8_t styleMask = 0x0F) const;
+  bool releaseSdCardFontForLowMemory(int fontId, bool preserveAdvanceTable = false) const;
 
   // Orientation control (affects logical width/height and coordinate transforms)
   void setOrientation(const Orientation o) { orientation = o; }
@@ -175,6 +183,7 @@ class GfxRenderer {
   void beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const;
   void endStripTarget() const;
   bool glyphIntersectsStrip(int x0, int y0, int x1, int y1) const;
+  bool isStripTargetActive() const { return _stripActive; }
   uint8_t* getWriteTarget() const { return _stripActive ? _stripBuf : frameBuffer; }
   int getWriteOriginY() const { return _stripActive ? _stripY0 : 0; }
   int getWriteRows() const { return _stripActive ? _stripRows : panelHeight; }
@@ -197,7 +206,9 @@ class GfxRenderer {
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawImageInverted(const uint8_t bitmap[], int x, int y, int width, int height) const;
+  void drawIcon(const uint8_t bitmap[], int x, int y, int size) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int width, int height) const;
+  void drawIconInverted(const uint8_t bitmap[], int x, int y, int size) const;
   void drawIconInverted(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
                   float cropY = 0) const;
@@ -264,6 +275,34 @@ class GfxRenderer {
 
   // Font helpers
   const uint8_t* getGlyphBitmap(const EpdFontData* fontData, const EpdGlyph* glyph) const;
+
+  // Lend the 48 KB framebuffer's bytes to a memory-hungry phase (chapter
+  // builds) WITHOUT freeing the allocation, so it never moves and repeated
+  // loans cannot fragment the heap. Between release and restore NOTHING may
+  // draw or display — the panel keeps showing its last refreshed image. The
+  // lent bytes are published via buildscratch::claim() for consumers like
+  // InflateStream. restore returns the buffer white, so the caller must
+  // redraw the full screen; it cannot fail (no allocation involved).
+  void releaseFrameBufferForBuild();
+  bool restoreFrameBufferAfterBuild();
+  bool hasFrameBuffer() const { return frameBuffer != nullptr; }
+
+  // RAII form of the loan above, for blocking build regions with early-return
+  // error paths: restores on scope exit (or explicitly via end()). Display the
+  // popup/screen the panel should hold BEFORE constructing one. Constructing
+  // while the framebuffer is already lent yields an inert loan (nesting-safe).
+  class FrameBufferLoan {
+   public:
+    explicit FrameBufferLoan(GfxRenderer& renderer);
+    ~FrameBufferLoan() { end(); }
+    void end();
+    FrameBufferLoan(const FrameBufferLoan&) = delete;
+    FrameBufferLoan& operator=(const FrameBufferLoan&) = delete;
+
+   private:
+    GfxRenderer& renderer_;
+    bool active_ = false;
+  };
 
   // Low level functions
   uint8_t* getFrameBuffer() const;

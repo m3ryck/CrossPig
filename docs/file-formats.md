@@ -7,10 +7,12 @@ fixed-size char buffer.
 
 ## `book.bin`
 
-### Version 7
+### Version 8
 
 `book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
 The current firmware writes this version from `BookMetadataCache`.
+Version 8 stores book and TOC title strings NFC-composed so decomposed
+diacritics render correctly with device fonts.
 
 ImHex pattern:
 
@@ -19,7 +21,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 7
+#define EXPECTED_VERSION 8
 #define MAX_STRING_LENGTH 65535
 
 struct String {
@@ -91,7 +93,7 @@ if (parsedSize != fileSize) {
 
 ## `reader_settings.bin`
 
-### Version 2
+### Version 3
 
 Each EPUB cache directory may contain `reader_settings.bin`. Missing files mean
 the book uses global Reader settings and the default auto-page-turn interval.
@@ -101,16 +103,19 @@ Version 1 stored only:
 - `u8 version`
 - `u16 autoPageTurnSeconds`
 
-Version 2 stores flags before the full reader-settings snapshot. This lets the
+Version 2 stores flags before the full reader-settings snapshot. Version 3 adds
+the EPUB word-spacing level to that snapshot. This lets the
 file preserve an auto-page-turn interval without forcing custom font/layout
 settings for the book. It also stores a per-book EPUB render mode override,
 which can be changed from book action menus before opening the book so a
 problematic EPUB can be moved to Balanced or Light rendering without entering
-the reader first.
+the reader first. Safe Mode also uses this file to save Light rendering with
+embedded styles, Bionic Reading, and Guide Dots disabled after that final
+fallback successfully opens a difficult book.
 
 ```c++
 struct ReaderSettingsBin {
-    u8 version; // 2
+    u8 version; // 3
     u8 flags;   // bit 0 = custom reader settings, bit 1 = custom auto-page-turn interval, bit 2 = render mode override
     u16 autoPageTurnSeconds;
     u8 renderMode; // 0 = CrossInk Default, 1 = Balanced, 2 = Light
@@ -118,6 +123,7 @@ struct ReaderSettingsBin {
     u8 fontFamily;
     u8 fontSize;
     u8 lineHeightPercent;
+    u8 wordSpacing; // 0 = natural font spacing; 1-4 widen each gap by ~75% per level
     u8 orientation;
     u8 screenMargin;
     u8 publisherPageNumbers;
@@ -225,27 +231,43 @@ Binary layout:
 
 ## `section.bin`
 
-### Version 42
+### Version 49
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
 
-Version 42 includes:
+Version 49 stores Bionic Reading split-run offsets in visual order so RTL word
+prefixes render on the right. Version 48 changed Arabic contextual shaping and text measurement, so cached
+word positions from version 47 no longer match what `drawText` renders.
+
+Version 47 makes the EPUB word-spacing level widen the natural inter-word gap
+(each level adds ~75% of the gap), which changes laid-out word positions, so
+older sections must rebuild. Version 46 added the EPUB word-spacing level to the
+cache-busting header. It retains the flat `TextBlock` arena and chapter-opener
+anchor behavior introduced in version 45. It includes:
 
 - cache-busting fields for font, line compression, extra paragraph spacing,
   forced paragraph indents, paragraph alignment, viewport size, hyphenation,
-  embedded CSS, image rendering mode, Bionic Reading, Guide Dots, and EPUB
-  render mode
+  embedded CSS, image rendering mode, Bionic Reading, Guide Dots, word spacing,
+  and EPUB render mode
 - page offset LUT
 - anchor-to-page map for fragment and footnote navigation
 - paragraph and list-item LUTs used by KOReader sync page refinement
 - optional per-word Bionic Reading split metadata
 - optional per-word Guide Dot x-offset metadata
+- optional per-word text flags for CSS backgrounds and layout-inserted hyphens
+- reading-aid layout that stores Bionic Reading and Guide Dots as per-word metadata instead of temporary layout words
 - publisher CSS page-break handling and adjusted justification spacing baked into page layout
 - table fragments
 - per-page footnote entries
 - per-page publisher page markers
+- serialized word style bits for underline, strikethrough, superscript, and
+  subscript
+- flat TextBlock word storage: per-word arrays plus one shared NUL-terminated
+  text blob, replacing length-prefixed word strings and parallel vectors. The
+  on-disk order mirrors the in-RAM arena so the firmware reads a whole block
+  payload with a single allocation and a single SD read
 
 ImHex pattern:
 
@@ -254,7 +276,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 42
+#define EXPECTED_VERSION 49
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -316,22 +338,29 @@ struct BlockStyle {
 
 struct TextBlock {
     u16 wordCount;
-    String words[wordCount];
-    s16 wordXPos[wordCount];
-    WordStyle wordStyle[wordCount];
-
-    u8 hasFocus;
-    if (hasFocus != 0) {
-        u8 wordFocusBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
-        u16 wordFocusSuffixX[wordCount] [[comment("Suffix x offset from word start")]];
-    }
-
+    u8 hasBionic;
     u8 hasGuideDots;
-    if (hasGuideDots != 0) {
-        u16 wordGuideDotXOffset[wordCount] [[comment("Guide dot x offset from word start; 0 means no dot")]];
-    }
+    u8 hasWordFlags;
+    u16 textBytes [[comment("Total size of text[], including one NUL per word")]];
 
-    u8 wordFlags[wordCount] [[comment("bit 0 = black background, bit 1 = layout-inserted trailing hyphen")]];
+    if (wordCount > 0) {
+        u16 textOff[wordCount] [[comment("Byte offset of word i's text within text[]")]];
+        s16 wordXPos[wordCount];
+        if (hasBionic != 0) {
+            u16 wordBionicSuffixX[wordCount] [[comment("Suffix x offset from word start")]];
+        }
+        if (hasGuideDots != 0) {
+            u16 wordGuideDotXOffset[wordCount] [[comment("Guide dot x offset from word start; 0 means no dot")]];
+        }
+        WordStyle wordStyle[wordCount];
+        if (hasBionic != 0) {
+            u8 wordBionicBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
+        }
+        if (hasWordFlags != 0) {
+            u8 wordFlags[wordCount] [[comment("bit 0 = black background, bit 1 = layout-inserted trailing hyphen")]];
+        }
+        char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
+    }
 
     BlockStyle blockStyle;
 };
@@ -454,6 +483,7 @@ struct SectionBin {
     u8 imageRendering;
     bool bionicReadingEnabled;
     bool guideReadingEnabled;
+    u8 wordSpacing;
     u8 renderMode; // 0 = CrossInk Default, 1 = Balanced, 2 = Light
 
     u16 pageCount;

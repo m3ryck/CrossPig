@@ -66,9 +66,14 @@ std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
 
 void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                        const bool foregroundBlack) {
-  (void)foregroundBlack;
-  // Images don't use fontId or text rendering
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
+  (void)fontId;
+  // Images don't use fontId for text rendering
+  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, foregroundBlack);
+}
+
+void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset,
+                                  const bool foregroundBlack) const {
+  imageBlock->renderPlaceholder(renderer, xPos + xOffset, yPos + yOffset, foregroundBlack);
 }
 
 bool PageImage::serialize(FsFile& file) {
@@ -362,6 +367,22 @@ void Page::renderText(GfxRenderer& renderer, const int fontId, const int xOffset
 void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, true,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
+}
+
+void Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                                       const bool foregroundBlack) const {
+  for (const auto& element : elements) {
+    if (element->getTag() == TAG_PageImage) {
+      auto& pageImage = static_cast<PageImage&>(*element);
+      if (pageImage.getImageBlock().needsDecode()) {
+        pageImage.renderPlaceholder(renderer, xOffset, yOffset, foregroundBlack);
+      } else {
+        pageImage.render(renderer, fontId, xOffset, yOffset, foregroundBlack);
+      }
+    } else {
+      element->render(renderer, fontId, xOffset, yOffset, foregroundBlack);
+    }
+  }
 }
 
 bool Page::serialize(FsFile& file) const {

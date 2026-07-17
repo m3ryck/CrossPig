@@ -1,9 +1,12 @@
 #pragma once
 
+#include <Arena.h>
+#include <ArenaVector.h>
+#include <BufferedFile.h>
 #include <HalStorage.h>
 
 #include <algorithm>
-#include <deque>
+#include <memory>
 #include <string>
 
 class BookMetadataCache {
@@ -54,6 +57,11 @@ class BookMetadataCache {
   // Temp file handles during build
   HalFile spineFile;
   HalFile tocFile;
+  // Buffers the per-entry tmp-file writes during the OPF/TOC passes: those
+  // writes interleave with zip-inflate SD reads, and unbuffered they thrash
+  // SdFat's shared sector cache (one 512B transaction per 4-byte pod). One
+  // wrapper serves whichever pass is active (spine, then toc).
+  std::unique_ptr<serialization::BufferedFileWriter> passOut;
 
   // Index for fast href→spineIndex lookup (used only for large EPUBs)
   struct SpineHrefIndexEntry {
@@ -61,7 +69,8 @@ class BookMetadataCache {
     uint16_t hrefLen;   // length for collision reduction
     int16_t spineIndex;
   };
-  std::deque<SpineHrefIndexEntry> spineHrefIndex;
+  Arena spineHrefIndexArena;
+  ArenaVector<SpineHrefIndexEntry> spineHrefIndex;
   bool useSpineHrefIndex = false;
 
   static constexpr uint16_t LARGE_SPINE_THRESHOLD = 300;
@@ -85,7 +94,13 @@ class BookMetadataCache {
   BookMetadata coreMetadata;
 
   explicit BookMetadataCache(std::string cachePath)
-      : cachePath(std::move(cachePath)), lutOffset(0), spineCount(0), tocCount(0), loaded(false), buildMode(false) {}
+      : cachePath(std::move(cachePath)),
+        lutOffset(0),
+        spineCount(0),
+        tocCount(0),
+        loaded(false),
+        buildMode(false),
+        spineHrefIndex(spineHrefIndexArena) {}
   ~BookMetadataCache() = default;
 
   // Building phase (stream to disk immediately)

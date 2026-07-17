@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <PNGdec.h>
+#include <Xtc.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include "../home/RecentBookProgress.h"
 #include "../reader/BookStatsView.h"
 #include "../reader/EpubReaderActivity.h"
+#include "../reader/EpubReaderUtils.h"
 #include "../reader/TxtReaderActivity.h"
 #include "../reader/XtcReaderActivity.h"
 #include "AppVersion.h"
@@ -24,6 +26,7 @@
 #include "SleepCoverAssets.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
+#include "components/themes/dashboard/DashboardTheme.h"
 #include "components/themes/minimal/MinimalTheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
@@ -232,13 +235,46 @@ RecentBook recentBookForPath(const std::string& path) {
   return loadedBook;
 }
 
-std::string epubCachePathFor(const std::string& path) { return Epub::cachePathForFilePath(path, "/.crosspoint"); }
+std::string bookStatsCachePathFor(const std::string& path) {
+  if (FsHelpers::hasEpubExtension(path)) {
+    return Epub::cachePathForFilePath(path, "/.crosspoint");
+  }
+  if (FsHelpers::hasXtcExtension(path)) {
+    return Xtc(path, "/.crosspoint").getCachePath();
+  }
+  return {};
+}
 
 BookReadingStats loadBookStatsForPath(const std::string& path) {
-  if (!FsHelpers::hasEpubExtension(path)) {
+  const std::string cachePath = bookStatsCachePathFor(path);
+  if (cachePath.empty()) {
     return BookReadingStats{};
   }
-  return BookReadingStats::load(epubCachePathFor(path));
+  return BookReadingStats::load(cachePath);
+}
+
+std::string loadChapterTitleForPath(const std::string& path) {
+  if (!FsHelpers::hasEpubExtension(path)) {
+    return {};
+  }
+
+  Epub epub(path, "/.crosspoint");
+  if (!epub.load(false, true)) {
+    return {};
+  }
+
+  EpubReaderUtils::Progress progress;
+  if (!EpubReaderUtils::loadProgress(epub, progress, "SLP")) {
+    return {};
+  }
+
+  const auto spineItem = epub.getSpineItem(progress.spineIndex);
+  if (spineItem.tocIndex < 0) {
+    return {};
+  }
+
+  const auto tocItem = epub.getTocItem(spineItem.tocIndex);
+  return tocItem.title;
 }
 
 enum class OverlayDrawResult : uint8_t { NotFound, Drawn, Failed };
@@ -404,10 +440,10 @@ void SleepActivity::onEnter() {
   overlayBackgroundBufferStored =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::OVERLAY && renderer.storeBwBuffer();
 
-  // Show the popup in the reader's orientation when sleep starts from an open book.
-  // Reset to portrait afterwards so the sleep screen renderer keeps its existing layout.
+  // Show the popup in the orientation that was visible before reader exit restores
+  // global settings. Reset to portrait afterwards so sleep screen layout stays unchanged.
   if (APP_STATE.lastSleepFromReader) {
-    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+    renderer.setOrientation(sleepPopupOrientation);
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   } else {
@@ -435,6 +471,8 @@ void SleepActivity::onEnter() {
       return renderMinimalSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::MINIMAL_STATS_SLEEP):
       return renderMinimalStatsSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::DASHBOARD_SLEEP):
+      return renderDashboardSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }
@@ -474,6 +512,10 @@ void SleepActivity::renderCustomSleepScreen() const {
   renderDefaultSleepScreen();
 }
 
+// Sleep screens paint with a single HALF refresh (stock parity): the OEM X4
+// firmware's only clean refresh in normal operation is the single-pass 0xD7
+// sequence, used once for the sleep image. It never runs the multi-flash GC
+// waveform (0xF7) that FULL_REFRESH selects (#2471's blinking complaint).
 void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -552,10 +594,10 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   }
 
   if (hasGreyscale) {
-    // OEM grayscale pipeline base: on X3 this displays the frame with the
-    // dedicated "AA-pre-BW(mid)" differential waveform, leaving every pixel
-    // in the calibrated state the gray nudge refresh expects; on X4 it is a
-    // plain HALF refresh (previous behavior).
+    // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
+    // calibrated against the pixel state the single-pass HALF waveform leaves
+    // behind. A FULL (GC) base parks pixels in a different charge state and
+    // the differential nudge then lands unevenly (blotchy noise in gray areas).
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
@@ -597,7 +639,7 @@ void SleepActivity::renderCoverSleepScreen() const {
 
   bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
   std::string coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped);
-  if (coverBmpPath.empty() && SleepCoverAssets::prepareFullCoverForPath(path, cropped)) {
+  if (coverBmpPath.empty() && SleepCoverAssets::prepareFullCoverForPath(path, cropped, &renderer)) {
     coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped);
   }
   if (coverBmpPath.empty()) {
@@ -655,14 +697,14 @@ void SleepActivity::renderMinimalSleepScreen() const {
 
   RecentBook book = recentBookForPath(path);
   book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  if (book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  }
 
   const BookReadingStats bookStats = loadBookStatsForPath(path);
   const float progressPercent = RecentBookProgress::loadPercent(book);
   MinimalTheme theme;
-  theme.drawSleepScreen(renderer, book, &bookStats, progressPercent);
-  if (sleepCoverFilterInvertsGeneratedScreen()) {
-    renderer.invertScreen();
-  }
+  theme.drawSleepScreen(renderer, book, &bookStats, progressPercent, sleepCoverFilterInvertsGeneratedScreen());
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
@@ -674,15 +716,42 @@ void SleepActivity::renderMinimalStatsSleepScreen() const {
 
   RecentBook book = recentBookForPath(path);
   book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  if (book.coverBmpPath.empty() && SleepCoverAssets::prepareMinimalCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedMinimalCoverPathFor(path);
+  }
 
   const BookReadingStats bookStats = loadBookStatsForPath(path);
   const GlobalReadingStats globalStats = GlobalReadingStats::load();
   const float progressPercent = RecentBookProgress::loadPercent(book);
   MinimalTheme theme;
-  theme.drawStatsSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent);
-  if (sleepCoverFilterInvertsGeneratedScreen()) {
-    renderer.invertScreen();
+  theme.drawStatsSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent,
+                             sleepCoverFilterInvertsGeneratedScreen());
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+}
+
+void SleepActivity::renderDashboardSleepScreen() const {
+  const std::string& path = currentBookPath.empty() ? APP_STATE.openEpubPath : currentBookPath;
+  if (path.empty()) {
+    return renderDefaultSleepScreen();
   }
+
+  RecentBook book = recentBookForPath(path);
+  const std::string fallbackCoverPath = book.coverBmpPath;
+  book.coverBmpPath = SleepCoverAssets::cachedDashboardCoverPathFor(path);
+  if (book.coverBmpPath.empty() && SleepCoverAssets::prepareDashboardCoverForPath(path, &renderer)) {
+    book.coverBmpPath = SleepCoverAssets::cachedDashboardCoverPathFor(path);
+  }
+  if (book.coverBmpPath.empty()) {
+    book.coverBmpPath = fallbackCoverPath;
+  }
+
+  const BookReadingStats bookStats = loadBookStatsForPath(path);
+  const GlobalReadingStats globalStats = GlobalReadingStats::load();
+  const float progressPercent = RecentBookProgress::loadPercent(book);
+  const std::string chapterTitle = loadChapterTitleForPath(path);
+  DashboardTheme theme;
+  theme.drawSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent, chapterTitle.c_str(),
+                        sleepCoverFilterInvertsGeneratedScreen());
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 

@@ -135,9 +135,23 @@ Tracked stats include:
 
 Recent CrossInk versions expanded this into a larger stats system, including synced totals, richer X3 stats screens, reading-streak and time charts, editable stat dates, idle-time filtering, reset controls, and all-time stats backup options.
 
+Note: Date-related stats require a device with a real-time clock (RTC) module. The X4 does not have an RTC module, therefore will not have as detailed stats as the X3.
+
 Reading stats can also be used as a sleep screen, including the Minimal Stats sleep screen on supported builds.
 
 For two-device syncing, see [Reading Stats Sync](./reading-stats-sync.md).
+
+## Nearby Position Sync
+
+CrossInk can copy the current EPUB position from one nearby CrossInk reader to
+another over ESP-NOW. Open the same EPUB on both readers, choose **Nearby
+Position Sync** from the in-book menu on both devices, and press **Share** on
+the reader that is already at the correct page.
+
+The receiving reader shows the incoming position and only applies it after you
+confirm it.
+
+For details and troubleshooting, see [Nearby Position Sync](./nearby-position-sync.md).
 
 ## Finished Books And Read Folder
 

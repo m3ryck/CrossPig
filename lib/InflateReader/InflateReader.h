@@ -3,6 +3,7 @@
 #include <uzlib.h>
 
 #include <cstddef>
+#include <cstdint>
 
 // Return value for readAtMost().
 enum class InflateStatus {
@@ -13,10 +14,16 @@ enum class InflateStatus {
 
 // Streaming deflate decompressor wrapping uzlib.
 //
+// NOTE: retained ONLY for FontDecompressor's tiny one-shot flash-resident group
+// decompressions, where uzlib's ~1KB state beats tinfl's ~11KB on the
+// OOM-sensitive render path. All throughput paths (zip entries, PNG IDAT) use
+// InflateStream (lib/miniz), which decodes several times faster.
+//
 // Two modes:
 //   init(false)  — one-shot: input is a contiguous buffer, call read() once.
 //   init(true)   — streaming: allocates a 32KB ring buffer for back-references
 //                  across multiple read() / readAtMost() calls.
+//   initWithExternalDictionary(...) — streaming with caller-owned scratch.
 //
 // Streaming callback pattern:
 //   The uzlib read callback receives a `struct uzlib_uncomp*` with no separate
@@ -38,6 +45,8 @@ enum class InflateStatus {
 //
 class InflateReader {
  public:
+  static constexpr size_t STREAMING_DICT_SIZE = 32768;
+
   InflateReader() = default;
   ~InflateReader();
 
@@ -48,6 +57,10 @@ class InflateReader {
   // when read() or readAtMost() will be called multiple times.
   // Returns false only in streaming mode if the ring buffer allocation fails.
   bool init(bool streaming = false);
+
+  // Initialise streaming mode with caller-owned scratch. The caller must keep
+  // the dictionary alive until this reader is deinitialized or destroyed.
+  bool initWithExternalDictionary(uint8_t* dictionary, size_t dictionarySize);
 
   // Release the ring buffer and reset internal state.
   void deinit();
@@ -82,4 +95,5 @@ class InflateReader {
  private:
   uzlib_uncomp decomp = {};
   uint8_t* ringBuffer = nullptr;
+  bool ownsRingBuffer = false;
 };

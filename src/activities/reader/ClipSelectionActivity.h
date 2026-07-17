@@ -17,13 +17,11 @@ struct ClipWordStyle {
   enum Flags : uint8_t {
     NONE = 0,
     FILL = 1 << 0,
-    INVERT = 1 << 1,
     UNDERLINE = 1 << 2,
     BORDER = 1 << 3,
   };
 
   uint8_t flags = FILL;
-  Color fillColor = Color::LightGray;
 };
 
 class ClipSelectionActivity final : public Activity {
@@ -40,15 +38,18 @@ class ClipSelectionActivity final : public Activity {
 
  private:
   static constexpr size_t BUFFER_CHUNK_SIZE = 4096;
+  static constexpr size_t MAX_SAVED_BUFFER_CHUNKS = 16;
+  static constexpr size_t MAX_READING_ORDER_WORDS = 240;
 
   std::vector<WordRef> words;
-  int fontId = 0;
+  int renderFontId = 0;
   Section& section;
   int startPageInSection = 0;
   int marginTop = 0;
   int marginLeft = 0;
 
-  std::vector<std::unique_ptr<uint8_t[]>> savedBufferChunks;
+  std::array<std::unique_ptr<uint8_t[]>, MAX_SAVED_BUFFER_CHUNKS> savedBufferChunks;
+  size_t savedBufferChunkCount = 0;
   size_t savedBufferSize = 0;
   int currentDisplayPage = 0;
   int savedSectionPage = 0;
@@ -57,17 +58,21 @@ class ClipSelectionActivity final : public Activity {
   int startMarkIdx = -1;
   bool needsPageSwitch = false;
   bool hasSavedBuffer = false;
-  mutable std::array<std::string, 4> prewarmTextByStyle;
+  bool usingFallbackFont = false;
+  std::array<uint16_t, MAX_READING_ORDER_WORDS> readingOrder{};
+  size_t readingOrderSize = 0;
 
   ButtonNavigator buttonNavigator;
 
+  void buildReadingOrder();
+  void resetSavedBufferChunks();
   bool allocateSavedBuffer();
   void storeCurrentBuffer();
   void restoreSavedBuffer() const;
   bool switchToPage(int pageIdx);
-  void prewarmHighlightedWords() const;
   void drawHighlights();
   void applyWordStyle(const WordRef& word, const ClipWordStyle& style) const;
-  int lineEndForward(int idx) const;
-  int lineEndBackward(int idx) const;
+  void useFallbackFont(const char* reason);
+  int lineEndForward(int orderIdx) const;
+  int lineEndBackward(int orderIdx) const;
 };

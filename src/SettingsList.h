@@ -146,7 +146,7 @@ inline uint8_t closestBuiltinFontSizeIndex(const uint8_t targetPointSize) {
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // Built-in font labels (StrId)
-  std::vector<StrId> enumValues = {StrId::STR_LEXEND_DECA, StrId::STR_BITTER, StrId::STR_CHAREINK};
+  std::vector<StrId> enumValues = {StrId::STR_LEXEND_DECA, StrId::STR_BITTER};
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
 
@@ -169,7 +169,6 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   if (sdFontCount > 0) {
     allStringValues.push_back(I18N.get(StrId::STR_LEXEND_DECA));
     allStringValues.push_back(I18N.get(StrId::STR_BITTER));
-    allStringValues.push_back(I18N.get(StrId::STR_CHAREINK));
     allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
   }
 
@@ -236,12 +235,12 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
 }
 
 inline SettingInfo buildSleepScreenSetting() {
-  SettingInfo s =
-      SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
-                        {StrId::STR_NONE_OPT, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER,
-                         StrId::STR_COVER_CUSTOM, StrId::STR_PAGE_OVERLAY, StrId::STR_READING_STATS,
-                         StrId::STR_THEME_MINIMAL, StrId::STR_THEME_MINIMAL_STATS, StrId::STR_QUICK_RESUME},
-                        "sleepScreen", StrId::STR_CAT_DISPLAY);
+  SettingInfo s = SettingInfo::Enum(
+      StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
+      {StrId::STR_NONE_OPT, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER,
+       StrId::STR_COVER_CUSTOM, StrId::STR_PAGE_OVERLAY, StrId::STR_READING_STATS, StrId::STR_THEME_MINIMAL,
+       StrId::STR_THEME_MINIMAL_STATS, StrId::STR_THEME_DASHBOARD, StrId::STR_QUICK_RESUME},
+      "sleepScreen", StrId::STR_CAT_DISPLAY);
   s.withEnumRawValues({
       static_cast<uint8_t>(CrossPointSettings::BLANK),
       static_cast<uint8_t>(CrossPointSettings::DARK),
@@ -253,6 +252,7 @@ inline SettingInfo buildSleepScreenSetting() {
       static_cast<uint8_t>(CrossPointSettings::READING_STATS_SLEEP),
       static_cast<uint8_t>(CrossPointSettings::MINIMAL_SLEEP),
       static_cast<uint8_t>(CrossPointSettings::MINIMAL_STATS_SLEEP),
+      static_cast<uint8_t>(CrossPointSettings::DASHBOARD_SLEEP),
       static_cast<uint8_t>(CrossPointSettings::QUICK_RESUME),
   });
   return s;
@@ -297,11 +297,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         "refreshFrequency", StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Enum(
             StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
-            {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_MINIMAL, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-             StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_ROUNDEDRAFF},
+            {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_MINIMAL, StrId::STR_THEME_DASHBOARD, StrId::STR_THEME_LYRA,
+             StrId::STR_THEME_LYRA_EXTENDED, StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_ROUNDEDRAFF},
             "uiTheme", StrId::STR_CAT_DISPLAY)
             .withEnumRawValues({CrossPointSettings::UI_THEME::CLASSIC, CrossPointSettings::UI_THEME::MINIMAL,
-                                CrossPointSettings::UI_THEME::LYRA, CrossPointSettings::UI_THEME::LYRA_3_COVERS,
+                                CrossPointSettings::UI_THEME::DASHBOARD, CrossPointSettings::UI_THEME::LYRA,
+                                CrossPointSettings::UI_THEME::LYRA_3_COVERS,
                                 CrossPointSettings::UI_THEME::LYRA_CAROUSEL,
                                 CrossPointSettings::UI_THEME::ROUNDEDRAFF}));
     add(SettingInfo::Enum(StrId::STR_RECENT_BOOKS_VIEW, &CrossPointSettings::recentBooksView,
@@ -313,8 +314,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // Built-in font-family entry. Replaced per-call with a registry-aware
     // version when SD fonts are installed.
     add(SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
-                          {StrId::STR_LEXEND_DECA, StrId::STR_BITTER, StrId::STR_CHAREINK}, "fontFamily",
-                          StrId::STR_CAT_READER));
+                          {StrId::STR_LEXEND_DECA, StrId::STR_BITTER}, "fontFamily", StrId::STR_CAT_READER));
     add(buildBuiltinFontSizeSetting());
     add(SettingInfo::Enum(StrId::STR_SD_FONT_SIZE_RANGE, &CrossPointSettings::sdFontSizeRange,
                           {StrId::STR_FONT_RANGE_TEENSY, StrId::STR_FONT_RANGE_TINY, StrId::STR_FONT_RANGE_XLARGE,
@@ -324,9 +324,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            {CrossPointSettings::MIN_LINE_HEIGHT_PERCENT, CrossPointSettings::MAX_LINE_HEIGHT_PERCENT,
                             CrossPointSettings::LINE_HEIGHT_PERCENT_STEP},
                            "lineHeightPercent", StrId::STR_CAT_READER));
-    add(SettingInfo::Enum(StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
-                          {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_LANDSCAPE_CCW, StrId::STR_INVERTED},
-                          "orientation", StrId::STR_CAT_READER)
+    add(SettingInfo::Enum(
+        StrId::STR_WORD_SPACING, &CrossPointSettings::wordSpacing,
+        {StrId::STR_NORMAL, StrId::STR_LEVEL_1, StrId::STR_LEVEL_2, StrId::STR_LEVEL_3, StrId::STR_LEVEL_4},
+        "wordSpacing", StrId::STR_CAT_READER));
+    add(SettingInfo::Enum(
+            StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
+            {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_LANDSCAPE_CCW, StrId::STR_ORIENTATION_INVERTED},
+            "orientation", StrId::STR_CAT_READER)
             .withEnumRawValues({CrossPointSettings::PORTRAIT, CrossPointSettings::LANDSCAPE_CW,
                                 CrossPointSettings::LANDSCAPE_CCW, CrossPointSettings::INVERTED}));
     add(SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",
@@ -625,6 +630,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
           KOREADER_STORE.saveToFile();
         },
         "koMatchMethod", StrId::STR_KOREADER_SYNC));
+    add(SettingInfo::DynamicEnum(
+        StrId::STR_SEND_METADATA, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
+        [] { return static_cast<uint8_t>(KOREADER_STORE.getSendMetadata()); },
+        [](uint8_t v) {
+          KOREADER_STORE.setSendMetadata(v != 0);
+          KOREADER_STORE.saveToFile();
+        },
+        "koSendMetadata", StrId::STR_KOREADER_SYNC));
 
     // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
     add(SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
@@ -737,6 +750,7 @@ inline std::vector<SettingInfo> buildGroupedReaderSettingsList(const std::vector
 
   readerSettings.push_back(SettingInfo::SectionHeader(StrId::STR_READER_PAGE_LAYOUT));
   addReaderSetting(StrId::STR_LINE_SPACING);
+  addReaderSetting(StrId::STR_WORD_SPACING);
   addReaderSetting(StrId::STR_SCREEN_MARGIN);
   addReaderSetting(StrId::STR_PARA_ALIGNMENT);
   addReaderSetting(StrId::STR_EXTRA_SPACING);
@@ -786,7 +800,7 @@ inline std::vector<SettingInfo> buildReaderSettingsParentList(const std::vector<
 
 inline std::vector<SettingInfo> buildReaderFontSettingsList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> settings;
-  settings.reserve(5);
+  settings.reserve(6);
   addSettingByName(settings, allSettings, StrId::STR_FONT_FAMILY);
   addSettingByName(settings, allSettings, StrId::STR_FONT_SIZE);
   addSettingByName(settings, allSettings, StrId::STR_LINE_SPACING);
@@ -798,9 +812,10 @@ inline std::vector<SettingInfo> buildReaderFontSettingsList(const std::vector<Se
 
 inline std::vector<SettingInfo> buildReaderPageLayoutSettingsList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> settings;
-  settings.reserve(6);
+  settings.reserve(7);
   addSettingByName(settings, allSettings, StrId::STR_ORIENTATION);
   addSettingByName(settings, allSettings, StrId::STR_SCREEN_MARGIN);
+  addSettingByName(settings, allSettings, StrId::STR_WORD_SPACING);
   addSettingByName(settings, allSettings, StrId::STR_PARA_ALIGNMENT);
   addSettingByName(settings, allSettings, StrId::STR_HYPHENATION);
   addSettingByName(settings, allSettings, StrId::STR_EXTRA_SPACING);

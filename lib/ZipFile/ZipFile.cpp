@@ -2,13 +2,12 @@
 
 #include <Arduino.h>
 #include <HalStorage.h>
-#include <InflateReader.h>
+#include <InflateStream.h>
 #include <Logging.h>
 
 #include <algorithm>
 
 struct ZipInflateCtx {
-  InflateReader reader;  // Must be first — callback casts uzlib_uncomp* to ZipInflateCtx*
   HalFile* file = nullptr;
   size_t fileRemaining = 0;
   uint8_t* readBuf = nullptr;
@@ -18,6 +17,7 @@ struct ZipInflateCtx {
 namespace {
 constexpr uint16_t ZIP_METHOD_STORED = 0;
 constexpr uint16_t ZIP_METHOD_DEFLATED = 8;
+constexpr size_t ONE_SHOT_DEFLATE_MAX_COMPRESSED_BYTES = 32768;
 
 // RAII zip: opens the zip if not already open, closes on destruction only if
 // it performed the open.  Removes the wasOpen/close boilerplate from every method.
@@ -41,19 +41,16 @@ class ScopedOpenClose final {
   bool ok = true;  // true when zip was already open (no open() call needed)
 };
 
-int zipReadCallback(uzlib_uncomp* uncomp) {
-  auto* ctx = reinterpret_cast<ZipInflateCtx*>(uncomp);
-  if (ctx->fileRemaining == 0) return -1;
+size_t zipFillCallback(void* vctx, const uint8_t** data) {
+  auto* ctx = static_cast<ZipInflateCtx*>(vctx);
+  if (ctx->fileRemaining == 0) return 0;
 
   const size_t toRead = ctx->fileRemaining < ctx->readBufSize ? ctx->fileRemaining : ctx->readBufSize;
   const size_t bytesRead = ctx->file->read(ctx->readBuf, toRead);
   ctx->fileRemaining -= bytesRead;
 
-  if (bytesRead == 0) return -1;
-
-  uncomp->source = ctx->readBuf + 1;
-  uncomp->source_limit = ctx->readBuf + bytesRead;
-  return ctx->readBuf[0];
+  *data = ctx->readBuf;
+  return bytesRead;
 }
 }  // namespace
 
@@ -297,8 +294,9 @@ bool ZipFile::getInflatedFileSize(const char* filename, size_t* size) {
   return true;
 }
 
-int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<uint32_t>& sizes) {
-  if (targets.empty()) {
+int ZipFile::fillUncompressedSizes(const SizeTarget* targets, const size_t targetCount, uint32_t* sizes,
+                                   const size_t sizeCount) {
+  if (targets == nullptr || sizes == nullptr || targetCount == 0) {
     return 0;
   }
 
@@ -310,7 +308,8 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
   file.seek(zipDetails.centralDirOffset);
 
   int matched = 0;
-  const int targetCount = static_cast<int>(targets.size());
+  const auto expectedMatches = static_cast<int>(targetCount);
+  const SizeTarget* const targetEnd = targets + targetCount;
   uint32_t sig;
   char itemName[256];
 
@@ -340,19 +339,19 @@ int ZipFile::fillUncompressedSizes(std::deque<SizeTarget>& targets, std::deque<u
       uint64_t hash = fnvHash64(itemName, nameLen);
       SizeTarget key = {hash, nameLen, 0};
 
-      auto it = std::lower_bound(targets.begin(), targets.end(), key, [](const SizeTarget& a, const SizeTarget& b) {
+      auto it = std::lower_bound(targets, targetEnd, key, [](const SizeTarget& a, const SizeTarget& b) {
         return a.hash < b.hash || (a.hash == b.hash && a.len < b.len);
       });
 
-      while (it != targets.end() && it->hash == hash && it->len == nameLen) {
-        if (it->index < sizes.size()) {
+      while (it != targetEnd && it->hash == hash && it->len == nameLen) {
+        if (it->index < sizeCount) {
           sizes[it->index] = uncompressedSize;
           matched++;
         }
         ++it;
       }
 
-      if (matched >= targetCount) {
+      if (matched >= expectedMatches) {
         break;
       }
     } else {
@@ -398,34 +397,74 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
     // Continue out of block with data set
   } else if (fileStat.method == ZIP_METHOD_DEFLATED) {
-    auto* fileReadBuffer = static_cast<uint8_t*>(malloc(1024));
-    if (!fileReadBuffer) {
-      LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer");
-      free(data);
-      return nullptr;
+    bool inflated = false;
+    if (deflatedDataSize <= ONE_SHOT_DEFLATE_MAX_COMPRESSED_BYTES) {
+      auto* compressedData = static_cast<uint8_t*>(malloc(deflatedDataSize));
+      if (compressedData) {
+        const size_t compressedRead = file.read(compressedData, deflatedDataSize);
+        if (compressedRead != deflatedDataSize) {
+          LOG_ERR("ZIP", "Failed to read compressed data");
+          free(compressedData);
+          free(data);
+          return nullptr;
+        }
+
+        InflateStream inflate;
+        if (!inflate.init(false)) {
+          LOG_ERR("ZIP", "Failed to init one-shot inflate stream");
+          free(compressedData);
+          free(data);
+          return nullptr;
+        }
+        inflate.setSource(compressedData, deflatedDataSize);
+        if (!inflate.read(data, inflatedDataSize)) {
+          LOG_ERR("ZIP", "Failed to inflate file");
+          free(compressedData);
+          free(data);
+          return nullptr;
+        }
+        free(compressedData);
+        inflated = true;
+      } else {
+        LOG_DBG("ZIP", "Falling back to streaming inflate; compressed buffer alloc failed (%zu bytes)",
+                static_cast<size_t>(deflatedDataSize));
+      }
     }
 
-    ZipInflateCtx ctx;
-    ctx.file = &file;
-    ctx.fileRemaining = deflatedDataSize;
-    ctx.readBuf = fileReadBuffer;
-    ctx.readBufSize = 1024;
+    if (!inflated) {
+      file.seek(fileOffset);
+      auto* fileReadBuffer = static_cast<uint8_t*>(malloc(1024));
+      if (!fileReadBuffer) {
+        LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer");
+        free(data);
+        return nullptr;
+      }
 
-    if (!ctx.reader.init(true)) {
-      LOG_ERR("ZIP", "Failed to init inflate reader");
+      ZipInflateCtx ctx;
+      ctx.file = &file;
+      ctx.fileRemaining = deflatedDataSize;
+      ctx.readBuf = fileReadBuffer;
+      ctx.readBufSize = 1024;
+
+      // One-shot mode: `data` holds the entire output, so back-references
+      // resolve inside it and no 32KB window is allocated.
+      InflateStream inflate;
+      if (!inflate.init(false)) {
+        LOG_ERR("ZIP", "Failed to init inflate stream");
+        free(fileReadBuffer);
+        free(data);
+        return nullptr;
+      }
+      inflate.setFill(zipFillCallback, &ctx);
+
+      if (!inflate.read(data, inflatedDataSize)) {
+        LOG_ERR("ZIP", "Failed to inflate file");
+        free(fileReadBuffer);
+        free(data);
+        return nullptr;
+      }
       free(fileReadBuffer);
-      free(data);
-      return nullptr;
     }
-    ctx.reader.setReadCallback(zipReadCallback);
-
-    if (!ctx.reader.read(data, inflatedDataSize)) {
-      LOG_ERR("ZIP", "Failed to inflate file");
-      free(fileReadBuffer);
-      free(data);
-      return nullptr;
-    }
-    free(fileReadBuffer);
 
     // Continue out of block with data set
   } else {
@@ -487,12 +526,6 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
     ctx.file = &file;
     ctx.fileRemaining = deflatedDataSize;
 
-    if (!ctx.reader.init(true)) {
-      LOG_ERR("ZIP", "Failed to init inflate reader (free=%u, maxAlloc=%u, chunk=%zu)", ESP.getFreeHeap(),
-              ESP.getMaxAllocHeap(), chunkSize);
-      return false;
-    }
-
     auto* fileReadBuffer = static_cast<uint8_t*>(malloc(chunkSize));
     if (!fileReadBuffer) {
       LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer (free=%u, maxAlloc=%u, chunk=%zu)",
@@ -510,14 +543,23 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
     ctx.readBuf = fileReadBuffer;
     ctx.readBufSize = chunkSize;
-    ctx.reader.setReadCallback(zipReadCallback);
+
+    InflateStream inflate;
+    if (!inflate.init(true)) {
+      LOG_ERR("ZIP", "Failed to init inflate stream (free=%u, maxAlloc=%u, chunk=%zu)", ESP.getFreeHeap(),
+              ESP.getMaxAllocHeap(), chunkSize);
+      free(outputBuffer);
+      free(fileReadBuffer);
+      return false;
+    }
+    inflate.setFill(zipFillCallback, &ctx);
 
     bool success = false;
     size_t totalProduced = 0;
 
     while (true) {
       size_t produced;
-      const InflateStatus status = ctx.reader.readAtMost(outputBuffer, chunkSize, &produced);
+      const InflateStream::Status status = inflate.readAtMost(outputBuffer, chunkSize, &produced);
 
       totalProduced += produced;
       if (totalProduced > static_cast<size_t>(inflatedDataSize)) {
@@ -533,7 +575,7 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
         }
       }
 
-      if (status == InflateStatus::Done) {
+      if (status == InflateStream::Status::Done) {
         if (totalProduced != static_cast<size_t>(inflatedDataSize)) {
           LOG_ERR("ZIP", "Decompressed size mismatch (expected %zu, got %zu)", static_cast<size_t>(inflatedDataSize),
                   totalProduced);
@@ -544,16 +586,16 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
         break;
       }
 
-      if (status == InflateStatus::Error) {
+      if (status == InflateStream::Status::Error) {
         LOG_ERR("ZIP", "Decompression failed");
         break;
       }
-      // InflateStatus::Ok: output buffer full, continue
+      // InflateStream::Status::Ok: output buffer full, continue
     }
 
     free(outputBuffer);
     free(fileReadBuffer);
-    return success;  // ctx.reader destructor frees the ring buffer
+    return success;  // inflate destructor frees the decompressor state + window
   }
 
   LOG_ERR("ZIP", "Unsupported compression method");

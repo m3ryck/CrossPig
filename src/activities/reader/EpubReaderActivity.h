@@ -5,14 +5,24 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <atomic>
+#include <memory>
 #include <optional>
 #include <string>
 
 #include "BookReadingStats.h"
 #include "BookmarkStore.h"
+#include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
 #include "activities/Activity.h"
+
+struct ToastRect {
+  int x = 0;
+  int y = 0;
+  int w = 0;
+  int h = 0;
+};
 
 class EpubReaderActivity final : public Activity {
  public:
@@ -20,6 +30,7 @@ class EpubReaderActivity final : public Activity {
     uint8_t fontFamily = 0;
     uint8_t fontSize = 0;
     uint8_t lineHeightPercent = 100;
+    uint8_t wordSpacing = 0;
     uint8_t orientation = 0;
     uint8_t screenMargin = 5;
     uint8_t publisherPageNumbers = 0;
@@ -47,11 +58,16 @@ class EpubReaderActivity final : public Activity {
   // Set when navigating to a footnote href with a fragment (e.g. #note1).
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
+  std::string pendingFootnotePreviewAnchor;
+  bool activeFootnotePreview = false;
   int pagesUntilFullRefresh = 0;
   int cachedSpineIndex = 0;
   int cachedChapterPageNumber = 0;
   int cachedChapterTotalPageCount = 0;
+  bool pendingRelayoutReposition = false;
   uint16_t cachedPageParagraphIndex = UINT16_MAX;
+  uint16_t cachedPageParagraphOffset = 0;
+  uint16_t cachedPageParagraphSpan = 0;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   unsigned long pageShownAtMs = 0UL;
@@ -104,8 +120,14 @@ class EpubReaderActivity final : public Activity {
   unsigned long tiltPageTurnFeedbackShowTime = 0UL;
   bool pendingRenderModeToast = false;
   bool renderModeToastShown = false;
+  bool pendingSafeModeToast = false;
+  bool safeModeToastShown = false;
   uint8_t renderModeToastMode = 0;
   unsigned long renderModeToastShowTime = 0UL;
+  std::unique_ptr<uint8_t[]> renderModeToastRegionBuffer;
+  size_t renderModeToastRegionBufferSize = 0;
+  ToastRect renderModeToastRegion;
+  bool renderModeToastRegionSaved = false;
   int completionTriggerSpineIndex = -1;
   float completionTriggerSpineProgress = 1.0f;
   bool completionPromptQueued = false;
@@ -120,6 +142,8 @@ class EpubReaderActivity final : public Activity {
   // Set when the reader is left at end-of-book and SETTINGS.moveFinishedToReadFolder is on.
   // Consumed in onExit() to relocate the finished book into /Read/.
   bool pendingReadFolderMove = false;
+  // Next-book suggestion menu for the End-of-Book screen
+  EndOfBookOptions endOfBookOptions;
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
@@ -131,11 +155,62 @@ class EpubReaderActivity final : public Activity {
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
 
+  // Viewport of the last render(), captured so loop()'s lazy partial-extension start
+  // builds with identical layout parameters to the pages already rendered.
+  uint16_t buildViewportWidth = 0;
+  uint16_t buildViewportHeight = 0;
+  // Set when the lazy extension start failed, so loop() does not retry every tick.
+  bool partialRebuildStartFailed = false;
+  // Set when a background extension build aborted for low heap. startBuild() still succeeds in
+  // that state -- it is the layout inside buildSomeMore() that runs out of memory -- so without
+  // this flag loop() would restart the same doomed build every tick, and skipLoopDelay() would
+  // hold the loop at full speed while it did. The reader keeps the pages already laid out; a
+  // build is only re-attempted from render() if the reader actually pages past the watermark.
+  bool partialRebuildAbortedForLowMemory = false;
+  std::atomic<bool> sectionBuildCancelRequested{false};
+  std::atomic<bool> goHomeAfterBuildCancel{false};
+
+  // Last position successfully persisted by saveProgress, used to skip redundant
+  // writeAtomic calls on no-op re-renders.
+  int lastSavedSpineIndex = -1;
+  int lastSavedPage = -1;
+  int lastSavedPageCount = -1;
+
   void renderContents(std::unique_ptr<Page> page, int fontId, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
-  void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
+  bool shouldUseFootnotePreview(int targetSpineIndex, const std::string& anchor) const;
+  std::string footnotePreviewCacheSuffix(EpubRenderMode renderMode, const std::string& anchor) const;
+  void clearFootnotePreviewState();
+  // Pages laid out per incremental-build pump: on the render path (catching up to the page
+  // being shown) and per loop() tick (background build of a large chapter). Kept small so a
+  // background build chunk never noticeably delays input or a pending render.
+  static constexpr int BUILD_PAGES_PER_CHUNK = 8;
+  static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  // How many pages to keep laid out ahead of the reader for a still-building section. A page
+  // turn is ~1s on e-ink and a page builds in ~30ms, so the reader can't out-click the builder
+  // -- a tiny buffer is enough. The background build stops once the watermark is this far
+  // ahead and resumes as the reader advances; building unbounded instead locked up input by
+  // monopolizing the RenderLock. A giant single-spine book therefore never finalizes its .bin
+  // in one sitting -- instant reopen comes from Section::suspendBuild() persisting the pages
+  // already laid out as a partial file on exit/sleep.
+  static constexpr int BUILD_WINDOW_AHEAD = 5;
+  // Reopening a partial does not immediately restart its whole-chapter extension build.
+  // Start it only when the reader is close enough to need pages past the watermark.
+  static constexpr int PARTIAL_REBUILD_START_MARGIN = 15;
+  // Show the indexing popup when an initial build must lay out more than this many pages up front
+  // (a deep resume/jump into a not-yet-built section), so it isn't a silent wait. Kept independent
+  // of the small look-ahead window so ordinary landings stay popup-free.
+  static constexpr int BUILD_POPUP_PAGE_THRESHOLD = 20;
+  // Also show the popup when first building a spine larger than this (uncompressed bytes): its
+  // whole HTML must be inflated before page 1 can lay out (the giant single-spine case), which is
+  // a multi-second wait. Normal chapters are well under this and stay popup-free.
+  static constexpr size_t BUILD_POPUP_BYTE_THRESHOLD = 96 * 1024;
+  // Remap the cached relative reading position once the section's real page count is known
+  // (used after a settings change re-paginates a chapter). Returns true if currentPage moved.
+  // No-op while the section is still building or when the pagination is unchanged (plain resume).
+  bool applyDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void cacheCurrentSectionPosition();
   void pauseReadingPaceTimer(const char* reason = "unknown");
@@ -153,6 +228,8 @@ class EpubReaderActivity final : public Activity {
   bool estimateTimeLeftSeconds(bool bookEstimate, uint32_t& seconds) const;
   bool formatTimeLeftLabel(char* buf, size_t len) const;
   void refreshCachedTimeLeftEstimate();
+  void applyBookStatsEditsFromDisk();
+  void handleBookStatsReturn();
   void resetCurrentBookStatsAfterDelete();
   void openFileTransfer();
   void openAutoPageTurnIntervalPicker(bool ignoreInitialConfirmRelease = false);
@@ -184,6 +261,8 @@ class EpubReaderActivity final : public Activity {
   bool executeLongPowerButtonAction();
   void handleClippingJump(const ClippingJumpResult& clipping);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  // Opens the reader menu for the current position (short-press Confirm)
+  void openReaderMenu();
   void applyOrientation(uint8_t orientation);
   void pageTurn(bool isForwardTurn, const char* source = "unknown");
   float getCurrentBookProgressPercent() const;
@@ -195,6 +274,10 @@ class EpubReaderActivity final : public Activity {
   void showCompletedFeedback(bool isCompleted);
   void showTiltPageTurnFeedback(bool enabled);
   void showRenderModeToast(uint8_t renderMode);
+  void showSafeModeToast();
+  bool storeRenderModeToastRegion(const char* msg);
+  void drawRenderModeToastBuffer(const char* msg);
+  bool restoreRenderModeToastRegion();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
@@ -208,6 +291,7 @@ class EpubReaderActivity final : public Activity {
   void loop() override;
   void render(RenderLock&& lock) override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
+  bool skipLoopDelay() override { return section && section->isBuilding(); }
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
   std::string getCurrentBookPath() const override { return epub ? epub->getPath() : std::string{}; }
@@ -220,5 +304,6 @@ class EpubReaderActivity final : public Activity {
   static bool drawCurrentPageToBuffer(const std::string& filePath, GfxRenderer& renderer);
   static uint8_t loadBookRenderMode(const std::string& filePath);
   static bool saveBookRenderMode(const std::string& filePath, uint8_t renderMode);
+  static bool resetBookReaderSettings(const std::string& filePath);
   ScreenshotInfo getScreenshotInfo() const override;
 };

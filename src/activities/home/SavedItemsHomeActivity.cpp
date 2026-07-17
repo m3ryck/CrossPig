@@ -13,6 +13,7 @@
 #include "CrossPointState.h"
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
+#include "components/CompactHeader.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -107,7 +108,11 @@ void SavedItemsHomeActivity::loop() {
     return;
   }
 
-  const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, true);
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = CompactHeader::contentTop(metrics);
+  const int contentHeight =
+      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int pageItems = std::max(1, contentHeight / metrics.listWithSubtitleRowHeight);
   const int listSize = static_cast<int>(books.size());
 
   buttonNavigator.onNextRelease([this, listSize] {
@@ -135,10 +140,9 @@ void SavedItemsHomeActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                 tr(STR_BOOKMARKS_AND_CLIPPINGS));
+  CompactHeader::drawTitle(renderer, tr(STR_BOOKMARKS_AND_CLIPPINGS));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = CompactHeader::contentTop(metrics);
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
 
   if (books.empty()) {
@@ -269,26 +273,26 @@ void SavedItemsHomeActivity::openBookmarkList(const SavedBookEntry& entry) {
 void SavedItemsHomeActivity::openClippingList(const SavedBookEntry& entry) {
   CLIPPINGS.loadForBook(entry.bookPath, entry.bookTitle, entry.bookAuthor, entry.bookType);
 
-  startActivityForResult(
-      std::make_unique<EpubReaderClippingListActivity>(renderer, mappedInput, CLIPPINGS.getClippings()),
-      [this, entry](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          const auto* clipping = std::get_if<ClippingJumpResult>(&result.data);
-          if (clipping) {
-            APP_STATE.pendingBookmarkSpine = clipping->spineIndex;
-            APP_STATE.pendingBookmarkProgress =
-                clipping->pageCount > 0 ? static_cast<float>(clipping->page) / clipping->pageCount : 0.0f;
-            APP_STATE.pendingBookmarkParagraphIndex = clipping->paragraphIndex;
-            APP_STATE.pendingClippingIndex = clipping->clippingIndex;
-            APP_STATE.saveToFile();
-            onSelectBook(entry.bookPath);
-          } else {
-            LOG_ERR("SVA", "openClippingList: unexpected result variant");
-            requestUpdate();
-          }
-        } else {
-          reloadSavedBooks();
-          requestUpdate();
-        }
-      });
+  startActivityForResult(std::make_unique<EpubReaderClippingListActivity>(renderer, mappedInput),
+                         [this, entry](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             const auto* clipping = std::get_if<ClippingJumpResult>(&result.data);
+                             if (clipping) {
+                               APP_STATE.pendingBookmarkSpine = clipping->spineIndex;
+                               APP_STATE.pendingBookmarkProgress =
+                                   clipping->pageCount > 0 ? static_cast<float>(clipping->page) / clipping->pageCount
+                                                           : 0.0f;
+                               APP_STATE.pendingBookmarkParagraphIndex = clipping->paragraphIndex;
+                               APP_STATE.pendingClippingIndex = clipping->clippingIndex;
+                               APP_STATE.saveToFile();
+                               onSelectBook(entry.bookPath);
+                             } else {
+                               LOG_ERR("SVA", "openClippingList: unexpected result variant");
+                               requestUpdate();
+                             }
+                           } else {
+                             reloadSavedBooks();
+                             requestUpdate();
+                           }
+                         });
 }

@@ -17,6 +17,8 @@
 
 namespace {
 
+constexpr int CLIP_SELECTION_FALLBACK_FONT_ID = UI_12_FONT_ID;
+
 bool hasEmSpace(const std::string& text) {
   return text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xE2 &&
          static_cast<unsigned char>(text[1]) == 0x80 && static_cast<unsigned char>(text[2]) == 0x83;
@@ -29,7 +31,7 @@ ClipSelectionActivity::ClipSelectionActivity(GfxRenderer& renderer, MappedInputM
                                              const int startPageInSection, const int marginTop, const int marginLeft)
     : Activity("ClipSelection", renderer, mappedInput),
       words(std::move(words)),
-      fontId(fontId),
+      renderFontId(fontId),
       section(section),
       startPageInSection(startPageInSection),
       marginTop(marginTop),
@@ -46,6 +48,16 @@ void ClipSelectionActivity::onEnter() {
     finish();
     return;
   }
+  buildReadingOrder();
+  if (readingOrderSize == 0) {
+    LOG_ERR("CLIP", "No readable word order available");
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
+  cursorIdx = 0;
 
   savedSectionPage = section.currentPage;
   if (!allocateSavedBuffer()) {
@@ -68,34 +80,59 @@ void ClipSelectionActivity::onEnter() {
 
 void ClipSelectionActivity::onExit() {
   section.currentPage = savedSectionPage;
-  savedBufferChunks.clear();
+  resetSavedBufferChunks();
   hasSavedBuffer = false;
+  if (usingFallbackFont) {
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      fcm->clearCache();
+    }
+  }
   Activity::onExit();
 }
 
 bool ClipSelectionActivity::allocateSavedBuffer() {
   savedBufferSize = renderer.getBufferSize();
   const size_t chunkCount = (savedBufferSize + BUFFER_CHUNK_SIZE - 1) / BUFFER_CHUNK_SIZE;
-  savedBufferChunks.reserve(chunkCount);
+  savedBufferChunkCount = 0;
+
+  if (chunkCount > savedBufferChunks.size()) {
+    LOG_ERR("CLIP", "Framebuffer snapshot needs %u chunks; using rerender fallback", static_cast<unsigned>(chunkCount));
+    savedBufferSize = 0;
+    return true;
+  }
 
   for (size_t i = 0; i < chunkCount; i++) {
     const size_t offset = i * BUFFER_CHUNK_SIZE;
     const size_t chunkSize = std::min(BUFFER_CHUNK_SIZE, savedBufferSize - offset);
     auto chunk = makeUniqueNoThrow<uint8_t[]>(chunkSize);
     if (!chunk) {
-      LOG_ERR("CLIP", "OOM: clipping page snapshot chunk %u (%u bytes)", static_cast<unsigned>(i),
-              static_cast<unsigned>(chunkSize));
-      savedBufferChunks.clear();
-      return false;
+      LOG_ERR("CLIP", "OOM: clipping page snapshot chunk %u (%u bytes); using rerender fallback",
+              static_cast<unsigned>(i), static_cast<unsigned>(chunkSize));
+      resetSavedBufferChunks();
+      savedBufferSize = 0;
+      return true;
     }
-    savedBufferChunks.push_back(std::move(chunk));
+    savedBufferChunks[i] = std::move(chunk);
   }
+  savedBufferChunkCount = chunkCount;
   return true;
 }
 
+void ClipSelectionActivity::resetSavedBufferChunks() {
+  for (auto& chunk : savedBufferChunks) {
+    chunk.reset();
+  }
+  savedBufferChunkCount = 0;
+}
+
 void ClipSelectionActivity::storeCurrentBuffer() {
+  if (savedBufferChunkCount == 0) {
+    hasSavedBuffer = false;
+    return;
+  }
+
   const uint8_t* frameBuffer = renderer.getFrameBuffer();
-  for (size_t i = 0; i < savedBufferChunks.size(); i++) {
+  for (size_t i = 0; i < savedBufferChunkCount; i++) {
     const size_t offset = i * BUFFER_CHUNK_SIZE;
     const size_t chunkSize = std::min(BUFFER_CHUNK_SIZE, savedBufferSize - offset);
     memcpy(savedBufferChunks[i].get(), frameBuffer + offset, chunkSize);
@@ -104,23 +141,60 @@ void ClipSelectionActivity::storeCurrentBuffer() {
 }
 
 void ClipSelectionActivity::restoreSavedBuffer() const {
+  if (!hasSavedBuffer) return;
+
   uint8_t* frameBuffer = renderer.getFrameBuffer();
-  for (size_t i = 0; i < savedBufferChunks.size(); i++) {
+  for (size_t i = 0; i < savedBufferChunkCount; i++) {
     const size_t offset = i * BUFFER_CHUNK_SIZE;
     const size_t chunkSize = std::min(BUFFER_CHUNK_SIZE, savedBufferSize - offset);
     memcpy(frameBuffer + offset, savedBufferChunks[i].get(), chunkSize);
   }
 }
 
-void ClipSelectionActivity::loop() {
+void ClipSelectionActivity::buildReadingOrder() {
+  readingOrderSize = 0;
+
+  int lineStart = 0;
   const int total = static_cast<int>(words.size());
+  while (lineStart < total) {
+    int lineEnd = lineStart + 1;
+    while (lineEnd < total && words[lineEnd].pageIdx == words[lineStart].pageIdx &&
+           words[lineEnd].y == words[lineStart].y) {
+      lineEnd++;
+    }
+
+    if (words[lineStart].lineIsRtl) {
+      for (int i = lineEnd - 1; i >= lineStart; --i) {
+        if (readingOrderSize >= readingOrder.size()) {
+          LOG_ERR("CLIP", "Reading order cap hit (%u words); clipping range truncated",
+                  static_cast<unsigned>(readingOrder.size()));
+          return;
+        }
+        readingOrder[readingOrderSize++] = static_cast<uint16_t>(i);
+      }
+    } else {
+      for (int i = lineStart; i < lineEnd; ++i) {
+        if (readingOrderSize >= readingOrder.size()) {
+          LOG_ERR("CLIP", "Reading order cap hit (%u words); clipping range truncated",
+                  static_cast<unsigned>(readingOrder.size()));
+          return;
+        }
+        readingOrder[readingOrderSize++] = static_cast<uint16_t>(i);
+      }
+    }
+    lineStart = lineEnd;
+  }
+}
+
+void ClipSelectionActivity::loop() {
+  const int total = static_cast<int>(readingOrderSize);
   using Button = MappedInputManager::Button;
 
-  auto moveCursor = [this](const int nextIdx) {
-    if (nextIdx == cursorIdx) return;
-    const int previousPage = words[cursorIdx].pageIdx;
-    cursorIdx = nextIdx;
-    if (words[cursorIdx].pageIdx != previousPage) {
+  auto moveCursor = [this](const int nextOrderIdx) {
+    if (nextOrderIdx == cursorIdx || nextOrderIdx < 0 || nextOrderIdx >= static_cast<int>(readingOrderSize)) return;
+    const int previousPage = words[readingOrder[cursorIdx]].pageIdx;
+    cursorIdx = nextOrderIdx;
+    if (words[readingOrder[cursorIdx]].pageIdx != previousPage) {
       needsPageSwitch = true;
     }
     requestUpdate();
@@ -150,7 +224,8 @@ void ClipSelectionActivity::loop() {
     } else {
       const int from = std::min(startMarkIdx, cursorIdx);
       const int to = std::max(startMarkIdx, cursorIdx);
-      auto result = ClipTextBuilder::build(words, from, to, total, startPageInSection, section.pageCount);
+      auto result =
+          ClipTextBuilder::build(words, readingOrder.data(), from, to, total, startPageInSection, section.pageCount);
       if (const auto paragraphIndex = section.getParagraphIndexForPage(result.sectionPage)) {
         result.paragraphIndex = *paragraphIndex;
       }
@@ -175,16 +250,15 @@ void ClipSelectionActivity::loop() {
 }
 
 void ClipSelectionActivity::render(RenderLock&&) {
-  if (!hasSavedBuffer) return;
-
   if (needsPageSwitch) {
-    switchToPage(words[cursorIdx].pageIdx);
+    switchToPage(words[readingOrder[cursorIdx]].pageIdx);
     needsPageSwitch = false;
-  } else {
+  } else if (hasSavedBuffer) {
     restoreSavedBuffer();
+  } else if (!switchToPage(currentDisplayPage)) {
+    return;
   }
 
-  prewarmHighlightedWords();
   drawHighlights();
 
   const auto confirmLabel = startMarkIdx == -1 ? tr(STR_SELECT) : tr(STR_DONE);
@@ -205,14 +279,28 @@ bool ClipSelectionActivity::switchToPage(const int pageIdx) {
   }
 
   if (auto* fcm = renderer.getFontCacheManager()) {
-    auto scope = fcm->createPrewarmScope();
-    page->renderText(renderer, fontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
-    scope.endScanAndPrewarm();
-    renderer.clearScreen(ReaderUtils::readerBackgroundColor());
-    page->render(renderer, fontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+    bool renderWithFallback = false;
+    {
+      auto scope = fcm->createPrewarmScope();
+      page->renderText(renderer, renderFontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+      if (!scope.endScanAndPrewarm() && renderer.isSdCardFont(renderFontId)) {
+        useFallbackFont("page prewarm");
+        renderWithFallback = true;
+      } else {
+        renderer.clearScreen(ReaderUtils::readerBackgroundColor());
+        page->render(renderer, renderFontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+      }
+    }
+    if (renderWithFallback) {
+      auto fallbackScope = fcm->createPrewarmScope();
+      page->renderText(renderer, renderFontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+      fallbackScope.endScanAndPrewarm();
+      renderer.clearScreen(ReaderUtils::readerBackgroundColor());
+      page->render(renderer, renderFontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+    }
   } else {
     renderer.clearScreen(ReaderUtils::readerBackgroundColor());
-    page->render(renderer, fontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
+    page->render(renderer, renderFontId, marginLeft, marginTop, ReaderUtils::readerForegroundBlack());
   }
 
   storeCurrentBuffer();
@@ -222,113 +310,86 @@ bool ClipSelectionActivity::switchToPage(const int pageIdx) {
 
 void ClipSelectionActivity::applyWordStyle(const WordRef& word, const ClipWordStyle& style) const {
   const auto textStyle = static_cast<EpdFontFamily::Style>(word.style & ~EpdFontFamily::UNDERLINE);
-  const int skipX = hasEmSpace(word.text) ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
+  const int skipX = hasEmSpace(word.text) ? renderer.getTextAdvanceX(renderFontId, "\xe2\x80\x83", textStyle) : 0;
   const int drawX = word.x + skipX;
   const int drawW = word.w - skipX;
   if (drawW <= 0) return;
 
-  const bool invert = (style.flags & ClipWordStyle::INVERT) != 0;
-  const bool fill = !invert && (style.flags & ClipWordStyle::FILL) != 0;
-  if (invert) {
-    renderer.fillRect(drawX, word.y, drawW, word.h, true);
-  } else if (fill) {
-    renderer.fillRectDither(drawX, word.y, drawW, word.h, style.fillColor);
-  }
-
-  if ((style.flags & ClipWordStyle::BORDER) != 0) {
-    renderer.drawRect(drawX, word.y, drawW, word.h, !invert);
-  }
-
-  if (word.text.find_first_not_of(" \t") != std::string::npos) {
-    const bool textBlack = !invert;
-    renderer.drawText(fontId, drawX, word.y, hasEmSpace(word.text) ? word.text.c_str() + 3 : word.text.c_str(),
-                      textBlack, textStyle);
-  }
-
-  if ((style.flags & ClipWordStyle::UNDERLINE) != 0) {
-    const int underlineY = word.y + renderer.getFontAscenderSize(fontId) + 2;
-    renderer.drawLine(drawX, underlineY, drawX + drawW, underlineY, true);
-  }
-}
-
-void ClipSelectionActivity::prewarmHighlightedWords() const {
-  if (!renderer.isSdCardFont(fontId)) return;
-
-  auto* fcm = renderer.getFontCacheManager();
-  if (!fcm) return;
-
-  for (auto& text : prewarmTextByStyle) {
-    text.clear();
-  }
-
-  const auto appendWord = [this](const WordRef& word) {
-    if (word.pageIdx != currentDisplayPage) return;
-    const uint8_t styleIdx = static_cast<uint8_t>(word.style) & 0x03;
-    if (styleIdx >= prewarmTextByStyle.size()) return;
-    prewarmTextByStyle[styleIdx] += word.text;
-    prewarmTextByStyle[styleIdx].push_back(' ');
-  };
-
-  if (startMarkIdx != -1) {
-    const int from = std::min(startMarkIdx, cursorIdx);
-    const int to = std::max(startMarkIdx, cursorIdx);
-    for (int i = from; i <= to; i++) {
-      appendWord(words[i]);
-    }
-  }
-
-  appendWord(words[cursorIdx]);
-
-  for (uint8_t styleIdx = 0; styleIdx < prewarmTextByStyle.size(); styleIdx++) {
-    if (!prewarmTextByStyle[styleIdx].empty()) {
-      fcm->prewarmCache(fontId, prewarmTextByStyle[styleIdx].c_str(), static_cast<uint8_t>(1u << styleIdx));
-    }
-  }
-}
-
-void ClipSelectionActivity::drawHighlights() {
-  static constexpr ClipWordStyle selectionStyle{ClipWordStyle::FILL | ClipWordStyle::UNDERLINE, Color::LightGray};
-  static constexpr ClipWordStyle cursorStyle{ClipWordStyle::INVERT, Color::LightGray};
-
-  if (startMarkIdx != -1) {
-    const int from = std::min(startMarkIdx, cursorIdx);
-    const int to = std::max(startMarkIdx, cursorIdx);
-    for (int i = from; i <= to; i++) {
-      if (words[i].pageIdx == currentDisplayPage) {
-        applyWordStyle(words[i], selectionStyle);
+  const bool fill = (style.flags & ClipWordStyle::FILL) != 0;
+  if (fill) {
+    // Add the dither's black pixels without clearing the word's existing black
+    // pixels. This preserves the snapshotted glyphs and avoids a font-cache
+    // allocation/redraw on every selection step.
+    for (int y = word.y; y < word.y + word.h; y += 2) {
+      for (int x = drawX; x < drawX + drawW; x += 2) {
+        renderer.drawPixel(x, y, true);
       }
     }
   }
 
-  if (words[cursorIdx].pageIdx == currentDisplayPage) {
-    applyWordStyle(words[cursorIdx], cursorStyle);
+  if ((style.flags & ClipWordStyle::BORDER) != 0) {
+    renderer.drawRect(drawX, word.y, drawW, word.h, true);
+  }
+
+  if ((style.flags & ClipWordStyle::UNDERLINE) != 0) {
+    const int underlineY = word.y + renderer.getFontAscenderSize(renderFontId) + 2;
+    renderer.drawLine(drawX, underlineY, drawX + drawW, underlineY, true);
   }
 }
 
-int ClipSelectionActivity::lineEndForward(const int idx) const {
-  const int total = static_cast<int>(words.size());
-  const int lineY = words[idx].y;
-  const int page = words[idx].pageIdx;
-  for (int i = idx + 1; i < total; ++i) {
-    if (words[i].pageIdx != page || words[i].y != lineY) return i;
-  }
-  return idx;
+void ClipSelectionActivity::useFallbackFont(const char* reason) {
+  if (usingFallbackFont) return;
+  LOG_ERR("CLIP", "SD font %d failed during %s; using fallback font %d for clipping selection", renderFontId, reason,
+          CLIP_SELECTION_FALLBACK_FONT_ID);
+  renderFontId = CLIP_SELECTION_FALLBACK_FONT_ID;
+  usingFallbackFont = true;
 }
 
-int ClipSelectionActivity::lineEndBackward(const int idx) const {
-  const int lineY = words[idx].y;
-  const int page = words[idx].pageIdx;
-  int i = idx - 1;
+void ClipSelectionActivity::drawHighlights() {
+  static constexpr ClipWordStyle selectionStyle{ClipWordStyle::FILL | ClipWordStyle::UNDERLINE};
+  static constexpr ClipWordStyle cursorStyle{ClipWordStyle::BORDER | ClipWordStyle::UNDERLINE};
+
+  if (startMarkIdx != -1) {
+    const int from = std::min(startMarkIdx, cursorIdx);
+    const int to = std::max(startMarkIdx, cursorIdx);
+    for (int i = from; i <= to; i++) {
+      const WordRef& word = words[readingOrder[i]];
+      if (word.pageIdx == currentDisplayPage) {
+        applyWordStyle(word, selectionStyle);
+      }
+    }
+  }
+
+  const WordRef& cursorWord = words[readingOrder[cursorIdx]];
+  if (cursorWord.pageIdx == currentDisplayPage) {
+    applyWordStyle(cursorWord, cursorStyle);
+  }
+}
+
+int ClipSelectionActivity::lineEndForward(const int orderIdx) const {
+  const int total = static_cast<int>(readingOrder.size());
+  const WordRef& current = words[readingOrder[orderIdx]];
+  for (int i = orderIdx + 1; i < total; ++i) {
+    const WordRef& word = words[readingOrder[i]];
+    if (word.pageIdx != current.pageIdx || word.y != current.y) return i;
+  }
+  return orderIdx;
+}
+
+int ClipSelectionActivity::lineEndBackward(const int orderIdx) const {
+  const WordRef& current = words[readingOrder[orderIdx]];
+  int i = orderIdx - 1;
   for (; i >= 0; --i) {
-    if (words[i].pageIdx != page || words[i].y != lineY) break;
+    const WordRef& word = words[readingOrder[i]];
+    if (word.pageIdx != current.pageIdx || word.y != current.y) break;
   }
-  if (i < 0) return idx;
+  if (i < 0) return orderIdx;
 
-  const int prevY = words[i].y;
-  const int prevPage = words[i].pageIdx;
+  const WordRef& previous = words[readingOrder[i]];
   int first = i;
   for (; i >= 0; --i) {
-    if (words[i].pageIdx != prevPage || words[i].y != prevY) break;
+    const WordRef& word = words[readingOrder[i]];
+    if (word.pageIdx != previous.pageIdx || word.y != previous.y) break;
     first = i;
   }
   return first;

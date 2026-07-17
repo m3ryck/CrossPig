@@ -32,6 +32,7 @@ struct ReaderLayoutSettingsSnapshot {
   uint8_t fontFamily;
   uint8_t fontSize;
   uint8_t lineHeightPercent;
+  uint8_t wordSpacing;
   uint8_t orientation;
   uint8_t screenMargin;
   uint8_t publisherPageNumbers;
@@ -50,12 +51,12 @@ struct ReaderLayoutSettingsSnapshot {
 
   bool operator==(const ReaderLayoutSettingsSnapshot& other) const {
     return fontFamily == other.fontFamily && fontSize == other.fontSize &&
-           lineHeightPercent == other.lineHeightPercent && orientation == other.orientation &&
-           screenMargin == other.screenMargin && publisherPageNumbers == other.publisherPageNumbers &&
-           paragraphAlignment == other.paragraphAlignment && embeddedStyle == other.embeddedStyle &&
-           hyphenationEnabled == other.hyphenationEnabled && textAntiAliasing == other.textAntiAliasing &&
-           readerDarkMode == other.readerDarkMode && imageRendering == other.imageRendering &&
-           extraParagraphSpacing == other.extraParagraphSpacing &&
+           lineHeightPercent == other.lineHeightPercent && wordSpacing == other.wordSpacing &&
+           orientation == other.orientation && screenMargin == other.screenMargin &&
+           publisherPageNumbers == other.publisherPageNumbers && paragraphAlignment == other.paragraphAlignment &&
+           embeddedStyle == other.embeddedStyle && hyphenationEnabled == other.hyphenationEnabled &&
+           textAntiAliasing == other.textAntiAliasing && readerDarkMode == other.readerDarkMode &&
+           imageRendering == other.imageRendering && extraParagraphSpacing == other.extraParagraphSpacing &&
            forceParagraphIndents == other.forceParagraphIndents && bionicReadingEnabled == other.bionicReadingEnabled &&
            guideReadingEnabled == other.guideReadingEnabled && epubRenderMode == other.epubRenderMode &&
            std::strncmp(sdFontFamilyName, other.sdFontFamilyName, sizeof(sdFontFamilyName)) == 0;
@@ -68,6 +69,7 @@ ReaderLayoutSettingsSnapshot captureReaderLayoutSettings() {
       SETTINGS.fontFamily,
       SETTINGS.fontSize,
       SETTINGS.lineHeightPercent,
+      SETTINGS.wordSpacing,
       SETTINGS.orientation,
       SETTINGS.screenMargin,
       SETTINGS.publisherPageNumbers,
@@ -103,6 +105,29 @@ void drawBookmarkTabIcon(const GfxRenderer& renderer, int x, int y, const bool f
   const int polyX[5] = {iconX, iconX + ribbonWidth, iconX + ribbonWidth, centerX, iconX};
   const int polyY[5] = {iconY, iconY, iconY + ribbonHeight, iconY + ribbonHeight - notchSize, iconY + ribbonHeight};
   renderer.fillPolygon(polyX, polyY, 5, foregroundBlack);
+}
+
+void drawReaderMenuBitmapIcon(const GfxRenderer& renderer, const uint8_t bitmap[], const int x, const int y,
+                              const int width, const int height, const bool foregroundBlack = true) {
+  if (bitmap == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+
+  const int stride = (width + 7) / 8;
+  for (int row = 0; row < height; ++row) {
+    const int srcOffset = row * stride;
+    for (int col = 0; col < width; ++col) {
+      const uint8_t mask = static_cast<uint8_t>(0x80 >> (col & 7));
+      if ((bitmap[srcOffset + (col >> 3)] & mask) != 0) {
+        continue;
+      }
+
+      // Icon assets are authored for the legacy portrait blitter. Keep that
+      // source rotation, but route placement through logical coordinates so
+      // landscape and inverted reader menus keep the tabs centered.
+      renderer.drawPixel(x + width - 1 - row, y + col, foregroundBlack);
+    }
+  }
 }
 
 }  // namespace
@@ -148,7 +173,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(bool
   auto& settingsItems = items[SETTINGS_TAB_INDEX];
 
   mainItems.reserve(8 + (hasFootnotes ? 1u : 0u));
-  bookmarkItems.reserve(7 + (hasBookmarks ? 2u : 0u) + (hasClippings ? 1u : 0u));
+  bookmarkItems.reserve(8 + (hasBookmarks ? 2u : 0u) + (hasClippings ? 1u : 0u));
   settingsItems.reserve(2 + (showReadingPaceReset ? 1u : 0u));
 
   if (hasFootnotes) {
@@ -164,6 +189,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(bool
       {MenuAction::TOGGLE_COMPLETED, isBookCompleted ? StrId::STR_MARK_UNFINISHED : StrId::STR_MARK_FINISHED});
 
   bookmarkItems.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
+  bookmarkItems.push_back({MenuAction::NEARBY_POSITION_SYNC, StrId::STR_NEARBY_POSITION_SYNC});
   bookmarkItems.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
   if (hasClippings) {
     bookmarkItems.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});
@@ -230,19 +256,11 @@ void EpubReaderMenuActivity::drawIconTabBar(const Rect rect) const {
     }
 
     if (i == static_cast<size_t>(MenuTab::Main)) {
-      if (tabFocused) {
-        renderer.drawIconInverted(MenuIcon24, iconX, iconY, tabIconSize, tabIconSize);
-      } else {
-        renderer.drawIcon(MenuIcon24, iconX, iconY, tabIconSize, tabIconSize);
-      }
+      drawReaderMenuBitmapIcon(renderer, MenuIcon24, iconX, iconY, tabIconSize, tabIconSize, !tabFocused);
     } else if (i == static_cast<size_t>(MenuTab::Bookmarks)) {
       drawBookmarkTabIcon(renderer, iconX, iconY, !tabFocused);
     } else {
-      if (tabFocused) {
-        renderer.drawIconInverted(Settings2Icon24, iconX, iconY, tabIconSize, tabIconSize);
-      } else {
-        renderer.drawIcon(Settings2Icon24, iconX, iconY, tabIconSize, tabIconSize);
-      }
+      drawReaderMenuBitmapIcon(renderer, Settings2Icon24, iconX, iconY, tabIconSize, tabIconSize, !tabFocused);
     }
   }
 }
@@ -255,6 +273,8 @@ void EpubReaderMenuActivity::onEnter() {
 void EpubReaderMenuActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderMenuActivity::loop() {
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
+
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
     const int menuCount = static_cast<int>(activeMenuItems().size());
@@ -283,8 +303,11 @@ void EpubReaderMenuActivity::loop() {
 
     const auto selectedAction = items[selectedIndex].action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
-      // Cycle orientation preview locally; actual rotation happens on menu exit.
-      pendingOrientation = (pendingOrientation + 1) % orientationLabels.size();
+      optionPopup.show(StrId::STR_ORIENTATION, orientationLabels.data(), static_cast<int>(orientationLabels.size()),
+                       pendingOrientation, [this](int idx) {
+                         pendingOrientation = idx;
+                         requestUpdate();
+                       });
       requestUpdate();
       return;
     }
@@ -317,26 +340,25 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::VIEW_CLIPPINGS) {
-      startActivityForResult(
-          std::make_unique<EpubReaderClippingListActivity>(renderer, mappedInput, CLIPPINGS.getClippings()),
-          [this](const ActivityResult& result) {
-            if (result.isCancelled) {
-              requestUpdate();
-              return;
-            }
+      startActivityForResult(std::make_unique<EpubReaderClippingListActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 requestUpdate();
+                                 return;
+                               }
 
-            const auto* clipping = std::get_if<ClippingJumpResult>(&result.data);
-            if (clipping == nullptr) {
-              requestUpdate();
-              return;
-            }
+                               const auto* clipping = std::get_if<ClippingJumpResult>(&result.data);
+                               if (clipping == nullptr) {
+                                 requestUpdate();
+                                 return;
+                               }
 
-            ClippingJumpResult menuResult = *clipping;
-            menuResult.orientation = pendingOrientation;
-            menuResult.settingsChanged = settingsChanged;
-            setResult(std::move(menuResult));
-            finish();
-          });
+                               ClippingJumpResult menuResult = *clipping;
+                               menuResult.orientation = pendingOrientation;
+                               menuResult.settingsChanged = settingsChanged;
+                               setResult(std::move(menuResult));
+                               finish();
+                             });
       return;
     }
 
@@ -355,6 +377,8 @@ void EpubReaderMenuActivity::loop() {
 }
 
 void EpubReaderMenuActivity::render(RenderLock&&) {
+  if (optionPopup.processRender(renderer, mappedInput)) return;
+
   renderer.clearScreen();
 
   auto metrics = UITheme::getInstance().getMetrics();

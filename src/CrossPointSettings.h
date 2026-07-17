@@ -4,9 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <iosfwd>
+#include <mutex>
 
 class CrossPointSettings {
  private:
+  mutable std::mutex _mutex;
+
   // Private constructor for singleton
   CrossPointSettings() = default;
 
@@ -17,6 +20,10 @@ class CrossPointSettings {
   // Delete copy constructor and assignment
   CrossPointSettings(const CrossPointSettings&) = delete;
   CrossPointSettings& operator=(const CrossPointSettings&) = delete;
+
+  // Access the settings mutex for protecting multi-field reads/writes from other cores.
+  // Callers must not re-enter SETTINGS methods that lock _mutex while holding it.
+  std::mutex& getMutex() const { return _mutex; }
 
   enum SLEEP_SCREEN_MODE {
     DARK = 0,
@@ -30,6 +37,7 @@ class CrossPointSettings {
     MINIMAL_SLEEP = 8,
     QUICK_RESUME = 9,
     MINIMAL_STATS_SLEEP = 10,
+    DASHBOARD_SLEEP = 11,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -132,7 +140,7 @@ class CrossPointSettings {
   };
 
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  enum FONT_FAMILY { LEXENDDECA = 0, BITTER = 1, CHAREINK = 2, FONT_FAMILY_COUNT };
+  enum FONT_FAMILY { LEXENDDECA = 0, BITTER = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
   enum FONT_SIZE {
@@ -238,7 +246,8 @@ class CrossPointSettings {
     ROUNDEDRAFF = 3,
     LYRA_CAROUSEL = 4,
     MINIMAL = 5,
-    UI_THEME_COUNT = 6
+    DASHBOARD = 6,
+    UI_THEME_COUNT = 7
   };
   enum RECENT_BOOKS_VIEW { RECENT_BOOKS_LIST = 0, RECENT_BOOKS_GRID = 1, RECENT_BOOKS_VIEW_COUNT };
 
@@ -370,6 +379,7 @@ class CrossPointSettings {
 #endif
   uint8_t lineSpacing = NORMAL;  // migration only; new saves use lineHeightPercent
   uint8_t lineHeightPercent = 100;
+  uint8_t wordSpacing = 0;
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
   uint8_t sleepTimeoutMinutes = 10;
@@ -461,6 +471,7 @@ class CrossPointSettings {
   static constexpr uint8_t MIN_LINE_HEIGHT_PERCENT = 70;
   static constexpr uint8_t MAX_LINE_HEIGHT_PERCENT = 200;
   static constexpr uint8_t LINE_HEIGHT_PERCENT_STEP = 1;
+  static constexpr uint8_t MAX_WORD_SPACING = 4;
   static constexpr uint16_t DEFAULT_READING_IDLE_TIME_THRESHOLD_SECONDS = 5 * 60;
   static constexpr uint16_t MIN_READING_IDLE_TIME_THRESHOLD_SECONDS = 30;
   static constexpr uint16_t MAX_READING_IDLE_TIME_THRESHOLD_SECONDS = 10 * 60;
