@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Book Store now sends EAPI login forms correctly, renders the search status before blocking on HTTPS, streams search and download-link JSON without buffering the full response, reuses its HTTPS connection between operations, and no longer reports TLS request failures as a disconnected Wi-Fi network.
 - Bionic Reading now keeps Hebrew and other right-to-left EPUB text in the correct reading order.
 - EPUB clipping selection no longer replaces selected text with corrupted glyphs as the selection grows.
 - Popup option menus now show a scrollbar when more choices are available than can fit on screen.
@@ -125,7 +126,11 @@
 - New **Book Store** activity reachable from `Home > File Transfer > Book Store`. It allows searching and downloading books from a configurable Z-library-compatible source, with settings for store URL, email, password, download folder, and a **Verify Login** option to test credentials before searching.
 
 ### Fixed
-- Book Store TLS handshake failure when connecting to servers using Let's Encrypt certificates on the ESP32-C3. Fixed by providing the R13 intermediate CA (RSA 2048-bit) directly via `cert_pem` instead of relying on the global `crt_bundle_attach`, which avoids both the `mbedtls_pk_verify_ext()` issue in `esp-x509-crt-bundle` and the RSA 4096-bit operation needed for ISRG Root X1.
+- Web settings no longer freeze when Book Store fields are added. The fields remain editable in the WebView without extending the shared in-memory settings list.
+- Book Store network requests now explicitly close successful HTTP connections and report post-cleanup heap, TLS clock, and certificate diagnostics after connection failures.
+- TLS clients now restore the ESP system clock from the X3 RTC at boot, so valid certificates continue working after a restart.
+- KOReader Sync no longer rejects a healthy X3 Wi-Fi connection solely because the largest free block is slightly below its previous TLS guard threshold.
+- Book Store TLS now trusts z-lib.fm's current Let's Encrypt YR1 intermediate directly and defers result allocations until after login, reducing peak handshake memory on the ESP32-C3.
 
 ## [v1.3.3] - 2026-06-13
 

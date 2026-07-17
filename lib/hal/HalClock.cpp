@@ -3,6 +3,7 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include <cassert>
@@ -40,6 +41,22 @@ bool isValidDate(const uint16_t year, const uint8_t month, const uint8_t day) {
   const uint8_t monthDays = daysInMonth(year, month);
   return monthDays > 0 && day >= 1 && day <= monthDays;
 }
+
+time_t utcEpochFromDateTime(const uint16_t year, const uint8_t month, const uint8_t day, const uint8_t hour,
+                            const uint8_t minute) {
+  uint32_t days = 0;
+  for (uint16_t currentYear = 1970; currentYear < year; currentYear++) {
+    days += isLeapYear(currentYear) ? 366U : 365U;
+  }
+  for (uint8_t currentMonth = 1; currentMonth < month; currentMonth++) {
+    days += daysInMonth(year, currentMonth);
+  }
+  days += day - 1;
+  return static_cast<time_t>(days * 86400U + static_cast<uint32_t>(hour) * 3600U +
+                             static_cast<uint32_t>(minute) * 60U);
+}
+
+constexpr time_t MIN_VALID_TLS_EPOCH = 1704067200;  // 2024-01-01T00:00:00Z
 
 void adjustDateByDays(uint16_t& year, uint8_t& month, uint8_t& day, const int dayDelta) {
   if (dayDelta > 0) {
@@ -99,6 +116,23 @@ void HalClock::begin() {
   // Prime the cache with an initial read
   uint8_t h, m;
   getTime(h, m);
+
+  // mbedTLS reads the ESP system clock, not the DS3231 directly. Restore that
+  // clock at boot so TLS remains valid after a restart when NTP sync is
+  // debounced because the RTC was already synced in a previous session.
+  uint16_t year;
+  uint8_t month, day;
+  if (getDate(year, month, day, h, m)) {
+    const time_t epoch = utcEpochFromDateTime(year, month, day, h, m);
+    if (epoch >= MIN_VALID_TLS_EPOCH) {
+      const timeval timeValue = {epoch, 0};
+      if (settimeofday(&timeValue, nullptr) == 0) {
+        LOG_INF("CLK", "System clock restored from RTC: %04u-%02u-%02u %02u:%02u UTC", year, month, day, h, m);
+      } else {
+        LOG_ERR("CLK", "Failed to restore system clock from RTC");
+      }
+    }
+  }
 }
 
 bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {

@@ -1174,6 +1174,31 @@ void CrossPointWebServer::handleGetSettings() const {
   bool seenFirst = false;
   JsonDocument doc;
 
+  // Book Store fields are kept out of getSettingsList(): while that static
+  // list is first built on X3, tilt settings are added as well. Keeping these
+  // fields here avoids a large SettingInfo vector reallocation at WebView open.
+  auto appendBookStoreString = [&](const char* key, StrId nameId, const char* value, bool secret = false) {
+    doc.clear();
+    doc["key"] = key;
+    doc["name"] = I18N.get(nameId);
+    doc["category"] = I18N.get(StrId::STR_BOOK_STORE);
+    doc["type"] = "string";
+    doc["value"] = value;
+    if (secret) doc["secret"] = true;
+
+    const size_t written = serializeJson(doc, output, outputSize);
+    if (written >= outputSize) {
+      LOG_DBG("WEB", "Skipping oversized Book Store JSON for: %s", key);
+      return;
+    }
+    if (seenFirst) {
+      server->sendContent(",");
+    } else {
+      seenFirst = true;
+    }
+    server->sendContent(output);
+  };
+
   for (const auto& s : settings) {
     if (!s.key) continue;  // Skip ACTION-only entries
 
@@ -1245,6 +1270,11 @@ void CrossPointWebServer::handleGetSettings() const {
     }
     server->sendContent(output);
   }
+
+  appendBookStoreString("bookStoreBaseUrl", StrId::STR_BOOK_STORE_BASE_URL, SETTINGS.bookStoreBaseUrl);
+  appendBookStoreString("bookStoreEmail", StrId::STR_BOOK_STORE_EMAIL, SETTINGS.bookStoreEmail);
+  appendBookStoreString("bookStorePassword", StrId::STR_BOOK_STORE_PASSWORD, SETTINGS.bookStorePassword, true);
+  appendBookStoreString("bookStoreDownloadPath", StrId::STR_BOOK_STORE_DOWNLOAD_PATH, SETTINGS.bookStoreDownloadPath);
 
   server->sendContent("]");
   server->sendContent("");
@@ -1325,6 +1355,21 @@ void CrossPointWebServer::handlePostSettings() {
         break;
     }
   }
+
+  auto applyBookStoreString = [&doc, &applied](const char* key, char* destination, size_t destinationSize) {
+    const JsonVariantConst value = doc[key];
+    if (destinationSize == 0 || !value.is<const char*>()) return;
+    const char* source = value.as<const char*>();
+    if (!source) return;
+    strncpy(destination, source, destinationSize - 1);
+    destination[destinationSize - 1] = '\0';
+    applied++;
+  };
+  applyBookStoreString("bookStoreBaseUrl", SETTINGS.bookStoreBaseUrl, sizeof(SETTINGS.bookStoreBaseUrl));
+  applyBookStoreString("bookStoreEmail", SETTINGS.bookStoreEmail, sizeof(SETTINGS.bookStoreEmail));
+  applyBookStoreString("bookStorePassword", SETTINGS.bookStorePassword, sizeof(SETTINGS.bookStorePassword));
+  applyBookStoreString("bookStoreDownloadPath", SETTINGS.bookStoreDownloadPath,
+                       sizeof(SETTINGS.bookStoreDownloadPath));
 
   SETTINGS.saveToFile();
 

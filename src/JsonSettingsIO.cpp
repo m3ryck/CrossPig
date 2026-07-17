@@ -205,6 +205,12 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
+  // Book Store is configured only on-device. Keeping its buffers out of the
+  // shared settings list prevents the WebView endpoint from building them.
+  doc["bookStoreBaseUrl"] = s.bookStoreBaseUrl;
+  doc["bookStoreEmail"] = s.bookStoreEmail;
+  doc["bookStorePassword"] = s.bookStorePassword;
+  doc["bookStoreDownloadPath"] = s.bookStoreDownloadPath;
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -240,6 +246,19 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   if (doc["statusBarChapterPageCount"].isNull()) {
     applyLegacyStatusBarSettings(s);
   }
+  auto loadBookStoreString = [&doc](char* destination, size_t destinationSize, const char* key) {
+    const JsonVariantConst value = doc[key];
+    if (destinationSize == 0 || !value.is<const char*>()) return;
+    const char* source = value.as<const char*>();
+    if (!source) return;
+    strncpy(destination, source, destinationSize - 1);
+    destination[destinationSize - 1] = '\0';
+  };
+  loadBookStoreString(s.bookStoreBaseUrl, sizeof(s.bookStoreBaseUrl), "bookStoreBaseUrl");
+  loadBookStoreString(s.bookStoreEmail, sizeof(s.bookStoreEmail), "bookStoreEmail");
+  loadBookStoreString(s.bookStorePassword, sizeof(s.bookStorePassword), "bookStorePassword");
+  loadBookStoreString(s.bookStoreDownloadPath, sizeof(s.bookStoreDownloadPath), "bookStoreDownloadPath");
+
   for (const auto& info : getSettingsList()) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.

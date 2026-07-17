@@ -4,6 +4,8 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <Memory.h>
+
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -14,7 +16,10 @@
 void BookStoreActivity::onEnter() {
   Activity::onEnter();
   resetToMainMenu();
-  ensureClient();
+  if (!ensureClient()) {
+    lastError = BookStoreError::Network;
+    state = BookStoreState::Error;
+  }
   requestUpdate();
 }
 
@@ -34,15 +39,19 @@ void BookStoreActivity::resetToMainMenu() {
   resultSelectedIndex = 0;
   currentPage = 1;
   books.clear();
-  books.shrink_to_fit();
 }
 
-void BookStoreActivity::ensureClient() {
+bool BookStoreActivity::ensureClient() {
   if (!client) {
-    client = std::make_unique<BookStoreClient>();
+    client = makeUniqueNoThrow<BookStoreClient>();
+    if (!client) {
+      LOG_ERR("BOOKSTORE", "Failed to allocate BookStoreClient");
+      return false;
+    }
   }
   client->setBaseUrl(SETTINGS.bookStoreBaseUrl);
   client->setCredentials(SETTINGS.bookStoreEmail, SETTINGS.bookStorePassword);
+  return true;
 }
 
 void BookStoreActivity::ensureWifiThen(std::function<void()> action) {
@@ -105,7 +114,12 @@ void BookStoreActivity::loop() {
         if (settingsIndex == SETTINGS_ITEM_COUNT - 1) {
           // Verify credentials
           ensureWifiThen([this] {
-            ensureClient();
+            if (!ensureClient()) {
+              lastError = BookStoreError::Network;
+              state = BookStoreState::Error;
+              requestUpdate();
+              return;
+            }
             BookStoreError err = client->login();
             if (err == BookStoreError::Ok) {
               std::strncpy(verificationMessage, tr(STR_BOOK_STORE_LOGIN_OK), sizeof(verificationMessage) - 1);
@@ -234,7 +248,12 @@ void BookStoreActivity::loop() {
           cancelDownload = false;
           requestUpdate();
 
-          ensureClient();
+          if (!ensureClient()) {
+            lastError = BookStoreError::Network;
+            state = BookStoreState::Error;
+            requestUpdate();
+            return;
+          }
           BookStoreError err = client->resolveDownloadUrl(selectedBook, downloadUrl);
           onDownloadLinkResolved(err);
         });
@@ -274,9 +293,15 @@ void BookStoreActivity::startSearch() {
   state = BookStoreState::Searching;
   books.clear();
   resultSelectedIndex = 0;
-  requestUpdate();
+  if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
+    LOG_ERR("BOOKSTORE", "Search screen could not be rendered before request");
+    requestUpdate(true);
+  }
 
-  ensureClient();
+  if (!ensureClient()) {
+    onSearchCompleted(BookStoreError::Network);
+    return;
+  }
   BookStoreError err = client->search(searchQuery.c_str(), currentPage, books);
   onSearchCompleted(err);
 }
@@ -583,7 +608,7 @@ void BookStoreActivity::renderError() {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_STORE));
 
   const int y = renderer.getScreenHeight() / 2 - renderer.getLineHeight(UI_10_FONT_ID);
-  const char* msg = tr(STR_BOOK_STORE_DOWNLOAD_FAILED);
+  const char* msg = tr(STR_BOOK_STORE_REQUEST_FAILED);
   switch (lastError) {
     case BookStoreError::Auth:
       msg = tr(STR_BOOK_STORE_LOGIN_FAILED);
@@ -595,7 +620,9 @@ void BookStoreActivity::renderError() {
       msg = tr(STR_BOOK_STORE_NO_RESULTS);
       break;
     case BookStoreError::Network:
-      msg = tr(STR_BOOK_STORE_NO_WIFI);
+      if (WiFi.status() != WL_CONNECTED) {
+        msg = tr(STR_BOOK_STORE_NO_WIFI);
+      }
       break;
     case BookStoreError::File:
       msg = tr(STR_BOOK_STORE_SAVE_FAILED);

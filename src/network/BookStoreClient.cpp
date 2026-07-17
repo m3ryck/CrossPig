@@ -6,9 +6,12 @@
 
 #include <esp_http_client.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <time.h>
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
@@ -18,43 +21,37 @@
 
 namespace {
 
-// Let's Encrypt R13 intermediate — the CA that directly signed z-lib.fm's
-// certificate.  We use this as the trust anchor instead of the ISRG Root X1
-// (RSA 4096-bit) because the ESP32-C3 has no hardware RSA accelerator and
-// 4096-bit RSA operations may exhaust the ~380 KB heap during the TLS
-// handshake.  R13 uses a 2048-bit key which fits comfortably.
-// Additionally, using an explicit PEM avoids the esp-x509-crt-bundle code
-// which calls mbedtls_pk_verify_ext() for every intermediate cert and has
-// issues with certain RSA signature schemes.
-static constexpr const char* R13_PEM = R"(
+// z-lib.fm currently uses the Let's Encrypt YR1 RSA-2048 intermediate. Trust
+// it directly so mbedTLS parses one small CA instead of YR1 plus the inactive
+// R13 chain (or the RSA-4096 ISRG root) during its peak heap phase.
+static constexpr const char* BOOKSTORE_CA_PEM = R"(
 -----BEGIN CERTIFICATE-----
-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
+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
 -----END CERTIFICATE-----
 )";
 
@@ -89,93 +86,388 @@ static void setCommonHeaders(esp_http_client_handle_t client, const char* cookie
   esp_http_client_set_header(client, "User-Agent", "CrossInk-ESP32");
   // Z-Library eapi uses remix-userid / remix-userkey as HTTP headers (with hyphen).
   // Sending as cookies (with underscore) is kept as a fallback for older server configs.
-  if (userIdHeader && userIdHeader[0] != '\0') {
-    esp_http_client_set_header(client, "remix-userid", userIdHeader);
-  }
-  if (userKeyHeader && userKeyHeader[0] != '\0') {
-    esp_http_client_set_header(client, "remix-userkey", userKeyHeader);
-  }
-  if (cookie && cookie[0] != '\0') {
-    esp_http_client_set_header(client, "Cookie", cookie);
+  const auto setOptionalHeader = [client](const char* name, const char* value) {
+    if (value && value[0] != '\0') {
+      esp_http_client_set_header(client, name, value);
+#ifdef ESP_PLATFORM
+    } else {
+      esp_http_client_delete_header(client, name);
+#endif
+    }
+  };
+  setOptionalHeader("remix-userid", userIdHeader);
+  setOptionalHeader("remix-userkey", userKeyHeader);
+  setOptionalHeader("Cookie", cookie);
+}
+
+void logTlsFailure(esp_http_client_handle_t client, const char* phase) {
+  int tlsError = 0;
+  int tlsFlags = 0;
+  const esp_err_t diagnostic = esp_http_client_get_and_clear_last_tls_error(client, &tlsError, &tlsFlags);
+  if (diagnostic != ESP_OK || tlsError != 0 || tlsFlags != 0) {
+    LOG_ERR("BOOKSTORE", "%s TLS diagnostic: err=%s mbedtls=0x%x flags=0x%x", phase,
+            esp_err_to_name(diagnostic), tlsError < 0 ? -tlsError : tlsError, tlsFlags);
   }
 }
 
-// Shared response-reading helper used by both postForm and getRequest.
-static bool readBufferedResponse(esp_http_client_handle_t client, std::string& outResponse,
-                                 const char* logTag) {
-  const int64_t contentLen = esp_http_client_fetch_headers(client);
-  const int status = esp_http_client_get_status_code(client);
-  if (status != 200) {
-    LOG_ERR(logTag, "HTTP status %d", status);
+void cleanupHttpClient(esp_http_client_handle_t client, bool wasOpened, const char* requestType) {
+  if (wasOpened) {
+    const esp_err_t closeErr = esp_http_client_close(client);
+    if (closeErr != ESP_OK) {
+      LOG_ERR("BOOKSTORE", "%s close failed: %s", requestType, esp_err_to_name(closeErr));
+    }
+  }
+  esp_http_client_cleanup(client);
+#ifdef ESP_PLATFORM
+  LOG_INF("BOOKSTORE", "%s cleanup heap: free=%u maxalloc=%u", requestType,
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
+}
+
+void logTlsClock(const char* requestType) {
+  const time_t now = time(nullptr);
+  struct tm utcTime = {};
+  if (!gmtime_r(&now, &utcTime)) {
+    LOG_ERR("BOOKSTORE", "%s TLS clock unavailable", requestType);
+    return;
+  }
+  LOG_INF("BOOKSTORE", "%s TLS clock: %04d-%02d-%02d %02d:%02d:%02d UTC", requestType, utcTime.tm_year + 1900,
+          utcTime.tm_mon + 1, utcTime.tm_mday, utcTime.tm_hour, utcTime.tm_min, utcTime.tm_sec);
+}
+
+using ResponseSink = bool (*)(void* ctx, const char* data, size_t len);
+using ResponseStart = void (*)(void* ctx, size_t total);
+
+struct HttpRequestResult {
+  bool ok = false;
+  int status = -1;
+  size_t bytesRead = 0;
+};
+
+struct FixedBufferSink {
+  char* data;
+  size_t capacity;
+  size_t length;
+};
+
+bool appendFixedResponse(void* ctx, const char* data, size_t len) {
+  auto* sink = static_cast<FixedBufferSink*>(ctx);
+  if (!sink || !sink->data || sink->capacity == 0 || len > sink->capacity - 1 - sink->length) {
     return false;
   }
-  // contentLen == -1 means Transfer-Encoding: chunked — valid, just unknown size.
-  // Cap buffered responses at 64 KiB to protect the heap.
-  if (contentLen > 65536) {
-    LOG_ERR(logTag, "HTTP response too large: %lld", contentLen);
+  std::memcpy(sink->data + sink->length, data, len);
+  sink->length += len;
+  sink->data[sink->length] = '\0';
+  return true;
+}
+
+bool feedSearchResponse(void* ctx, const char* data, size_t len) {
+  auto* parser = static_cast<BookStoreSearchParser*>(ctx);
+  return parser && parser->feed(data, len);
+}
+
+#ifdef ESP_PLATFORM
+
+struct DownloadResponseSink {
+  FsFile* file = nullptr;
+  BookStoreClient::ProgressCallback* progress = nullptr;
+  const bool* cancelFlag = nullptr;
+  size_t total = 0;
+  size_t downloaded = 0;
+  bool writeFailed = false;
+  bool cancelled = false;
+};
+
+void startDownloadResponse(void* ctx, size_t total) {
+  auto* sink = static_cast<DownloadResponseSink*>(ctx);
+  if (!sink) return;
+  sink->total = total;
+  if (sink->progress && *sink->progress) {
+    (*sink->progress)(0, total);
+  }
+}
+
+bool writeDownloadResponse(void* ctx, const char* data, size_t len) {
+  auto* sink = static_cast<DownloadResponseSink*>(ctx);
+  if (!sink || !sink->file) return false;
+  if (sink->cancelFlag && *sink->cancelFlag) {
+    sink->cancelled = true;
     return false;
+  }
+  if (sink->file->write(data, len) != len) {
+    sink->writeFailed = true;
+    return false;
+  }
+  sink->downloaded += len;
+  if (sink->progress && *sink->progress) {
+    (*sink->progress)(sink->downloaded, sink->total);
+  }
+  return true;
+}
+
+struct ResponseEventContext {
+  ResponseSink sink = nullptr;
+  ResponseStart start = nullptr;
+  void* sinkCtx = nullptr;
+  size_t bytesRead = 0;
+  int requiredStatus = 0;
+  bool started = false;
+  bool sinkOk = true;
+};
+
+esp_err_t onHttpEvent(esp_http_client_event_t* event) {
+  if (!event || event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+
+  auto* context = static_cast<ResponseEventContext*>(event->user_data);
+  if (!context || !context->sink || !event->data || event->data_len <= 0) return ESP_OK;
+  if (!context->sinkOk) return ESP_FAIL;
+
+  if (!context->started) {
+    const int64_t contentLength = esp_http_client_get_content_length(event->client);
+    if (context->start) {
+      context->start(context->sinkCtx, contentLength > 0 ? static_cast<size_t>(contentLength) : 0);
+    }
+    context->started = true;
   }
 
-  // Pre-reserve to avoid repeated reallocations that fragment the heap.
-  const size_t reserveHint = (contentLen > 0 && contentLen <= 65536)
-                                 ? static_cast<size_t>(contentLen)
-                                 : 2048;
-  outResponse.reserve(reserveHint);
+  if (context->requiredStatus != 0 &&
+      esp_http_client_get_status_code(event->client) != context->requiredStatus) {
+    return ESP_OK;
+  }
+
+  if (!context->sink(context->sinkCtx, static_cast<const char*>(event->data),
+                     static_cast<size_t>(event->data_len))) {
+    context->sinkOk = false;
+    return ESP_FAIL;
+  }
+  context->bytesRead += static_cast<size_t>(event->data_len);
+  return ESP_OK;
+}
+
+esp_http_client_handle_t ensureHttpClient(void*& storedClient, const char* url,
+                                          esp_http_client_method_t method, int timeoutMs,
+                                          void* userData) {
+  if (storedClient) return static_cast<esp_http_client_handle_t>(storedClient);
+
+  esp_http_client_config_t config = {};
+  config.url = url;
+  config.method = method;
+  config.timeout_ms = timeoutMs;
+  // Responses are streamed in SD-sector-sized chunks, so a larger HTTP RX
+  // buffer only competes with the TLS handshake on this no-PSRAM target.
+  config.buffer_size = 512;
+  config.buffer_size_tx = 512;
+  config.cert_pem = BOOKSTORE_CA_PEM;
+  config.event_handler = onHttpEvent;
+  config.user_data = userData;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    LOG_ERR("BOOKSTORE", "Failed to allocate retained HTTP client");
+    return nullptr;
+  }
+  storedClient = client;
+  return client;
+}
+
+void destroyHttpClient(void*& storedClient) {
+  if (!storedClient) return;
+
+  esp_http_client_handle_t client = static_cast<esp_http_client_handle_t>(storedClient);
+  esp_http_client_cleanup(client);
+  storedClient = nullptr;
+#ifdef ESP_PLATFORM
+  LOG_INF("BOOKSTORE", "HTTP session cleanup heap: free=%u maxalloc=%u",
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#endif
+}
+
+HttpRequestResult performRequest(void*& storedClient, const char* url, esp_http_client_method_t method,
+                                 const char* body, ResponseSink sink, void* sinkCtx, const char* requestType,
+                                 const char* cookie, const char* userIdHeader, const char* userKeyHeader,
+                                 int timeoutMs = 30000, int requiredStatus = 0,
+                                 ResponseStart start = nullptr) {
+  WifiPowerSaveGuard psGuard;
+  HttpRequestResult result;
+
+  const bool reusedHandle = storedClient != nullptr;
+  ResponseEventContext context{sink, start, sinkCtx, 0, requiredStatus, false, true};
+  LOG_INF("BOOKSTORE", "%s pre-init heap: free=%u maxalloc=%u", requestType,
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  esp_http_client_handle_t client = ensureHttpClient(storedClient, url, method, timeoutMs, &context);
+  if (!client) return result;
+
+  if (reusedHandle &&
+      (esp_http_client_set_url(client, url) != ESP_OK ||
+       esp_http_client_set_method(client, method) != ESP_OK ||
+       esp_http_client_set_timeout_ms(client, timeoutMs) != ESP_OK ||
+       esp_http_client_set_user_data(client, &context) != ESP_OK)) {
+    LOG_ERR("BOOKSTORE", "%s request configuration failed", requestType);
+    return result;
+  }
+
+  const size_t bodyLen = body ? std::strlen(body) : 0;
+  if (esp_http_client_set_post_field(client, body, static_cast<int>(bodyLen)) != ESP_OK) {
+    LOG_ERR("BOOKSTORE", "%s request body configuration failed", requestType);
+    esp_http_client_set_user_data(client, nullptr);
+    return result;
+  }
+
+  if (method == HTTP_METHOD_POST) {
+    esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+    esp_http_client_set_header(client, "Accept", "application/json, text/javascript, */*; q=0.01");
+    esp_http_client_set_header(client, "X-Requested-With", "XMLHttpRequest");
+  }
+  setCommonHeaders(client, cookie, userIdHeader, userKeyHeader);
+  logTlsClock(requestType);
+
+  LOG_INF("BOOKSTORE", "%s heap: free=%u maxalloc=%u", requestType,
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  LOG_INF("BOOKSTORE", "%s HTTP handle: %s", requestType, reusedHandle ? "reused" : "new");
+
+  const esp_err_t err = esp_http_client_perform(client);
+  result.status = esp_http_client_get_status_code(client);
+  result.bytesRead = context.bytesRead;
+  result.ok = err == ESP_OK && context.sinkOk && result.bytesRead > 0 &&
+              (requiredStatus == 0 || result.status == requiredStatus);
+
+  // These point to caller-owned stack data and must not survive the request.
+  esp_http_client_set_user_data(client, nullptr);
+  esp_http_client_set_post_field(client, nullptr, 0);
+
+  if (err != ESP_OK) {
+    LOG_ERR("BOOKSTORE", "HTTP %s failed: %s", requestType, esp_err_to_name(err));
+    logTlsFailure(client, requestType);
+    // Preserve the allocated handle and its buffers, but discard a broken
+    // transport so the next request can reconnect without another init cycle.
+    esp_http_client_close(client);
+  } else if (!context.sinkOk) {
+    LOG_ERR("BOOKSTORE", "HTTP %s response sink rejected data", requestType);
+    esp_http_client_close(client);
+  }
+
+  if (result.status != 200) {
+    LOG_ERR("BOOKSTORE", "HTTP status %d", result.status);
+  }
+  LOG_INF("BOOKSTORE", "HTTP response: status=%d bytes=%u", result.status,
+          static_cast<unsigned>(result.bytesRead));
+  LOG_INF("BOOKSTORE", "%s retained heap: free=%u maxalloc=%u", requestType,
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  return result;
+}
+
+#endif
+
+HttpRequestResult readResponse(esp_http_client_handle_t client, ResponseSink sink, void* sinkCtx,
+                               const char* logTag) {
+  HttpRequestResult result;
+  const int64_t contentLen = esp_http_client_fetch_headers(client);
+  result.status = esp_http_client_get_status_code(client);
+  if (contentLen < 0) {
+    LOG_ERR(logTag, "HTTP header fetch failed: %lld status=%d", static_cast<long long>(contentLen), result.status);
+    return result;
+  }
+  if (result.status != 200) {
+    LOG_ERR(logTag, "HTTP status %d", result.status);
+  }
 
   char buffer[512];
   int readLen = 0;
-  while ((readLen = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
-    buffer[readLen] = '\0';
-    outResponse.append(buffer);
-    if (outResponse.size() > 65536) {
-      LOG_ERR(logTag, "HTTP response exceeded buffer limit");
-      outResponse.clear();
-      return false;
+  while ((readLen = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
+    if (!sink(sinkCtx, buffer, static_cast<size_t>(readLen))) {
+      LOG_ERR(logTag, "HTTP response exceeded parser or buffer limit");
+      return result;
     }
+    result.bytesRead += static_cast<size_t>(readLen);
   }
-  return !outResponse.empty();
+  if (readLen < 0) {
+    LOG_ERR(logTag, "HTTP response read failed");
+    return result;
+  }
+
+  result.ok = result.bytesRead > 0;
+  LOG_INF(logTag, "HTTP response: status=%d bytes=%u", result.status,
+          static_cast<unsigned>(result.bytesRead));
+  return result;
 }
 
-bool postForm(const char* url, const char* body, std::string& outResponse, const char* cookie = nullptr,
-              const char* userIdHeader = nullptr, const char* userKeyHeader = nullptr) {
+HttpRequestResult postForm(void*& storedClient, const char* url, const char* body, ResponseSink sink, void* sinkCtx,
+                           const char* cookie = nullptr, const char* userIdHeader = nullptr,
+                           const char* userKeyHeader = nullptr) {
+#ifdef ESP_PLATFORM
+  return performRequest(storedClient, url, HTTP_METHOD_POST, body, sink, sinkCtx, "POST", cookie,
+                        userIdHeader, userKeyHeader);
+#else
+  (void)storedClient;
   WifiPowerSaveGuard psGuard;
+  HttpRequestResult result;
 
   esp_http_client_config_t config = {};
   config.url = url;
   config.method = HTTP_METHOD_POST;
   config.timeout_ms = 30000;
   config.buffer_size = 1024;
-  config.buffer_size_tx = 1024;
-  config.cert_pem = R13_PEM;
+  config.buffer_size_tx = 512;
+  config.cert_pem = BOOKSTORE_CA_PEM;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) return false;
+  if (!client) return result;
 
-  esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+  esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+  esp_http_client_set_header(client, "Accept", "application/json, text/javascript, */*; q=0.01");
+  esp_http_client_set_header(client, "X-Requested-With", "XMLHttpRequest");
   setCommonHeaders(client, cookie, userIdHeader, userKeyHeader);
-  esp_http_client_set_post_field(client, body, static_cast<int>(std::strlen(body)));
+  logTlsClock("POST");
 
 #ifdef ESP_PLATFORM
   LOG_INF("BOOKSTORE", "POST heap: free=%u maxalloc=%u",
           (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 #endif
-  esp_err_t err = esp_http_client_open(client, static_cast<int>(std::strlen(body)));
+  const size_t bodyLen = std::strlen(body);
+  esp_err_t err = esp_http_client_open(client, static_cast<int>(bodyLen));
   if (err != ESP_OK) {
     LOG_ERR("BOOKSTORE", "HTTP POST open failed: %s", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    return false;
+    logTlsFailure(client, "HTTP POST open failed");
+    cleanupHttpClient(client, false, "POST");
+    return result;
   }
 
-  const bool ok = readBufferedResponse(client, outResponse, "BOOKSTORE");
-  esp_http_client_cleanup(client);
-  return ok;
+  size_t totalWritten = 0;
+  while (totalWritten < bodyLen) {
+    const int written = esp_http_client_write(client, body + totalWritten,
+                                              static_cast<int>(bodyLen - totalWritten));
+    if (written <= 0) {
+      LOG_ERR("BOOKSTORE", "HTTP POST body write failed: written=%d sent=%u total=%u", written,
+              static_cast<unsigned>(totalWritten), static_cast<unsigned>(bodyLen));
+      cleanupHttpClient(client, true, "POST");
+      return result;
+    }
+    totalWritten += static_cast<size_t>(written);
+  }
+
+  result = readResponse(client, sink, sinkCtx, "BOOKSTORE");
+  cleanupHttpClient(client, true, "POST");
+  return result;
+#endif
 }
 
 // GET request — used for endpoints that return JSON via HTTP GET (e.g. /eapi/book/.../file).
-bool getRequest(const char* url, std::string& outResponse, const char* cookie = nullptr,
-                const char* userIdHeader = nullptr, const char* userKeyHeader = nullptr) {
+HttpRequestResult getRequest(void*& storedClient, const char* url, ResponseSink sink, void* sinkCtx,
+                             const char* cookie = nullptr,
+                             const char* userIdHeader = nullptr, const char* userKeyHeader = nullptr) {
+#ifdef ESP_PLATFORM
+  return performRequest(storedClient, url, HTTP_METHOD_GET, nullptr, sink, sinkCtx, "GET", cookie,
+                        userIdHeader, userKeyHeader);
+#else
+  (void)storedClient;
   WifiPowerSaveGuard psGuard;
+  HttpRequestResult result;
 
   esp_http_client_config_t config = {};
   config.url = url;
@@ -183,12 +475,13 @@ bool getRequest(const char* url, std::string& outResponse, const char* cookie = 
   config.timeout_ms = 30000;
   config.buffer_size = 1024;
   config.buffer_size_tx = 512;
-  config.cert_pem = R13_PEM;
+  config.cert_pem = BOOKSTORE_CA_PEM;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (!client) return false;
+  if (!client) return result;
 
   setCommonHeaders(client, cookie, userIdHeader, userKeyHeader);
+  logTlsClock("GET");
 
 #ifdef ESP_PLATFORM
   LOG_INF("BOOKSTORE", "GET heap: free=%u maxalloc=%u",
@@ -198,18 +491,232 @@ bool getRequest(const char* url, std::string& outResponse, const char* cookie = 
   esp_err_t err = esp_http_client_open(client, 0);  // 0 = no request body
   if (err != ESP_OK) {
     LOG_ERR("BOOKSTORE", "HTTP GET open failed: %s", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    return false;
+    logTlsFailure(client, "HTTP GET open failed");
+    cleanupHttpClient(client, false, "GET");
+    return result;
   }
 
-  const bool ok = readBufferedResponse(client, outResponse, "BOOKSTORE");
-  esp_http_client_cleanup(client);
-  return ok;
+  result = readResponse(client, sink, sinkCtx, "BOOKSTORE");
+  cleanupHttpClient(client, true, "GET");
+  return result;
+#endif
 }
 
 }  // namespace
 
+BookStoreSearchParser::BookStoreSearchParser()
+    : parser(JsonCallbacks{this, &BookStoreSearchParser::onKey, &BookStoreSearchParser::onString,
+                           &BookStoreSearchParser::onNumber, &BookStoreSearchParser::onBool,
+                           &BookStoreSearchParser::onNull, &BookStoreSearchParser::onObjectStart,
+                           &BookStoreSearchParser::onObjectEnd, &BookStoreSearchParser::onArrayStart,
+                           &BookStoreSearchParser::onArrayEnd}) {}
+
+void BookStoreSearchParser::reset(std::vector<BookStoreBook>& output) {
+  books = &output;
+  downloadUrl = nullptr;
+  currentBook = {};
+  lastKey = LastKey::None;
+  depth = 0;
+  booksArrayDepth = 0;
+  insideBooksArray = false;
+  insideBook = false;
+  booksArraySeen = false;
+  downloadLinkSeen = false;
+  authenticationError = false;
+  quotaError = false;
+  parser.reset();
+}
+
+void BookStoreSearchParser::resetDownload(std::string& outputUrl) {
+  books = nullptr;
+  downloadUrl = &outputUrl;
+  downloadUrl->clear();
+  if (downloadUrl->capacity() < StreamingJsonParser::TOKEN_BUF_SIZE) {
+    downloadUrl->reserve(StreamingJsonParser::TOKEN_BUF_SIZE);
+  }
+  currentBook = {};
+  lastKey = LastKey::None;
+  depth = 0;
+  booksArrayDepth = 0;
+  insideBooksArray = false;
+  insideBook = false;
+  booksArraySeen = false;
+  downloadLinkSeen = false;
+  authenticationError = false;
+  quotaError = false;
+  parser.reset();
+}
+
+bool BookStoreSearchParser::feed(const char* data, size_t len) {
+  parser.feed(data, len);
+  return !parser.hasError();
+}
+
+void BookStoreSearchParser::copyValue(char* dest, size_t destLen, const char* value, size_t valueLen) {
+  if (!dest || destLen == 0) return;
+  const size_t copyLen = std::min(destLen - 1, valueLen);
+  std::memcpy(dest, value, copyLen);
+  dest[copyLen] = '\0';
+}
+
+void BookStoreSearchParser::applyString(const char* value, size_t len) {
+  if (lastKey == LastKey::Error || lastKey == LastKey::Message) {
+    const std::string_view message(value, len);
+    authenticationError = authenticationError || message.find("Please login") != std::string_view::npos ||
+                          message.find("Incorrect email or password") != std::string_view::npos;
+    quotaError = quotaError || message.find("Download limit reached") != std::string_view::npos;
+    return;
+  }
+  if (lastKey == LastKey::DownloadLink && downloadUrl) {
+    downloadUrl->assign(value, len);
+    downloadLinkSeen = true;
+    return;
+  }
+  if (!insideBook || depth != booksArrayDepth + 1) return;
+
+  switch (lastKey) {
+    case LastKey::Id:
+      copyValue(currentBook.id, sizeof(currentBook.id), value, len);
+      break;
+    case LastKey::Hash:
+      copyValue(currentBook.hash, sizeof(currentBook.hash), value, len);
+      break;
+    case LastKey::Title:
+      copyValue(currentBook.title, sizeof(currentBook.title), value, len);
+      break;
+    case LastKey::Author:
+      copyValue(currentBook.author, sizeof(currentBook.author), value, len);
+      break;
+    case LastKey::Extension:
+      copyValue(currentBook.extension, sizeof(currentBook.extension), value, len);
+      break;
+    case LastKey::Language:
+      copyValue(currentBook.language, sizeof(currentBook.language), value, len);
+      break;
+    case LastKey::FilesizeString:
+      copyValue(currentBook.filesizeString, sizeof(currentBook.filesizeString), value, len);
+      break;
+    case LastKey::Year:
+      currentBook.year = static_cast<uint32_t>(std::strtoul(value, nullptr, 10));
+      break;
+    default:
+      break;
+  }
+}
+
+void BookStoreSearchParser::commitBook() {
+  if (books && books->size() < MAX_RESULTS && currentBook.id[0] != '\0') {
+    books->push_back(currentBook);
+  }
+  currentBook = {};
+}
+
+void BookStoreSearchParser::onKey(void* ctx, const char* key, size_t len) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  self->lastKey = LastKey::None;
+
+  if (!self->insideBook) {
+    if (len == 7 && std::memcmp(key, "success", 7) == 0)
+      self->lastKey = LastKey::Success;
+    else if (len == 5 && std::memcmp(key, "books", 5) == 0)
+      self->lastKey = LastKey::Books;
+    else if (len == 5 && std::memcmp(key, "error", 5) == 0)
+      self->lastKey = LastKey::Error;
+    else if (len == 7 && std::memcmp(key, "message", 7) == 0)
+      self->lastKey = LastKey::Message;
+    else if (len == 12 && std::memcmp(key, "downloadLink", 12) == 0)
+      self->lastKey = LastKey::DownloadLink;
+    return;
+  }
+
+  if (self->depth != self->booksArrayDepth + 1) return;
+  if (len == 2 && std::memcmp(key, "id", 2) == 0)
+    self->lastKey = LastKey::Id;
+  else if (len == 4 && std::memcmp(key, "hash", 4) == 0)
+    self->lastKey = LastKey::Hash;
+  else if (len == 5 && std::memcmp(key, "title", 5) == 0)
+    self->lastKey = LastKey::Title;
+  else if (len == 6 && std::memcmp(key, "author", 6) == 0)
+    self->lastKey = LastKey::Author;
+  else if (len == 9 && std::memcmp(key, "extension", 9) == 0)
+    self->lastKey = LastKey::Extension;
+  else if (len == 8 && std::memcmp(key, "language", 8) == 0)
+    self->lastKey = LastKey::Language;
+  else if (len == 14 && std::memcmp(key, "filesizeString", 14) == 0)
+    self->lastKey = LastKey::FilesizeString;
+  else if (len == 4 && std::memcmp(key, "year", 4) == 0)
+    self->lastKey = LastKey::Year;
+}
+
+void BookStoreSearchParser::onString(void* ctx, const char* value, size_t len) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  self->applyString(value, len);
+  self->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onNumber(void* ctx, const char* value, size_t len) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  if (self->lastKey != LastKey::Success) self->applyString(value, len);
+  self->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onBool(void* ctx, bool /*value*/) {
+  static_cast<BookStoreSearchParser*>(ctx)->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onNull(void* ctx) {
+  static_cast<BookStoreSearchParser*>(ctx)->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onObjectStart(void* ctx) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  self->depth++;
+  if (self->insideBooksArray && !self->insideBook && self->depth == self->booksArrayDepth + 1) {
+    self->insideBook = true;
+    self->currentBook = {};
+  }
+  self->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onObjectEnd(void* ctx) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  if (self->insideBook && self->depth == self->booksArrayDepth + 1) {
+    self->commitBook();
+    self->insideBook = false;
+  }
+  if (self->depth > 0) self->depth--;
+  self->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onArrayStart(void* ctx) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  const bool startsBooks = self->lastKey == LastKey::Books && !self->insideBooksArray;
+  self->depth++;
+  if (startsBooks) {
+    self->insideBooksArray = true;
+    self->booksArraySeen = true;
+    self->booksArrayDepth = self->depth;
+  }
+  self->lastKey = LastKey::None;
+}
+
+void BookStoreSearchParser::onArrayEnd(void* ctx) {
+  auto* self = static_cast<BookStoreSearchParser*>(ctx);
+  if (self->insideBooksArray && self->depth == self->booksArrayDepth) {
+    self->insideBooksArray = false;
+    self->insideBook = false;
+  }
+  if (self->depth > 0) self->depth--;
+  self->lastKey = LastKey::None;
+}
+
 BookStoreClient::BookStoreClient() { lastErrorMessage[0] = '\0'; }
+
+BookStoreClient::~BookStoreClient() {
+#ifdef ESP_PLATFORM
+  destroyHttpClient(httpClient);
+#endif
+}
 
 void BookStoreClient::setBaseUrl(const char* url) {
   if (!url) {
@@ -289,9 +796,8 @@ BookStoreError BookStoreClient::login() {
     return BookStoreError::Network;
   }
 
-  // Percent-encode credentials in an inner scope so the encoding buffers are
-  // released before postForm() — reducing peak stack usage for the background
-  // network task (4 KiB stack).
+  // Keep the encoded credentials scoped so they are released before the TLS
+  // request. The final EAPI form remains bounded by the credential field sizes.
   char body[448];
   {
     char encodedEmail[192];
@@ -309,63 +815,76 @@ BookStoreError BookStoreClient::login() {
     }
   }
 
-  std::string response;
-  if (!postForm(url, body, response)) {
+  responseBuffer[0] = '\0';
+  FixedBufferSink sink{responseBuffer, sizeof(responseBuffer), 0};
+  const HttpRequestResult response = postForm(httpClient, url, body, appendFixedResponse, &sink);
+  responseLength = sink.length;
+  if (!response.ok) {
     setError(BookStoreError::Network, "Login request failed");
     return BookStoreError::Network;
   }
+  if (response.status >= 500) {
+    setError(BookStoreError::Server, "Login server unavailable");
+    return BookStoreError::Server;
+  }
 
-  return parseLoginResponse(response.c_str(), response.size());
+  return parseLoginResponse(responseBuffer, responseLength);
 }
 
 BookStoreError BookStoreClient::parseLoginResponse(const char* json, size_t len) {
-  // Minimal manual parse: look for "success":1 and extract user.id / remix_userkey
   if (!json || len == 0) {
     setError(BookStoreError::Parse, "Empty login response");
     return BookStoreError::Parse;
   }
 
   const std::string_view view(json, len);
-  if (view.find("\"success\":1") == std::string_view::npos && view.find("\"success\": 1") == std::string_view::npos) {
-    if (view.find("Incorrect email or password") != std::string_view::npos ||
-        view.find("Please login") != std::string_view::npos) {
-      setError(BookStoreError::Auth, "Incorrect email or password");
-      return BookStoreError::Auth;
-    }
-    setError(BookStoreError::Auth, "Login rejected by server");
-    return BookStoreError::Auth;
-  }
-
   auto extract = [](std::string_view v, const char* key, char* out, size_t outLen) {
-    const std::string pattern = std::string("\"") + key + "\":\"";
-    size_t pos = v.find(pattern);
-    if (pos == std::string_view::npos) {
-      // Try unquoted numeric id
-      const std::string altPattern = std::string("\"") + key + "\":";
-      pos = v.find(altPattern);
-      if (pos == std::string_view::npos) return false;
-      pos += altPattern.size();
-      const size_t end = v.find_first_of(",}", pos);
-      const size_t len = end == std::string_view::npos ? outLen - 1 : std::min(outLen - 1, end - pos);
-      std::strncpy(out, v.data() + pos, len);
-      out[len] = '\0';
-      return true;
+    if (outLen == 0) return false;
+
+    char pattern[48];
+    const int patternLen = std::snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (patternLen <= 0 || static_cast<size_t>(patternLen) >= sizeof(pattern)) return false;
+    size_t pos = v.find(std::string_view(pattern, static_cast<size_t>(patternLen)));
+    if (pos == std::string_view::npos) return false;
+    pos += static_cast<size_t>(patternLen);
+    while (pos < v.size() && (v[pos] == ' ' || v[pos] == '\t' || v[pos] == '\r' || v[pos] == '\n')) pos++;
+    if (pos >= v.size() || v[pos++] != ':') return false;
+    while (pos < v.size() && (v[pos] == ' ' || v[pos] == '\t' || v[pos] == '\r' || v[pos] == '\n')) pos++;
+    if (pos >= v.size()) return false;
+
+    const bool quoted = v[pos] == '"';
+    if (quoted) pos++;
+    size_t end = quoted ? v.find('"', pos) : v.find_first_of(",}", pos);
+    if (end == std::string_view::npos || end == pos) return false;
+    while (!quoted && end > pos && (v[end - 1] == ' ' || v[end - 1] == '\t' || v[end - 1] == '\r' ||
+                                    v[end - 1] == '\n')) {
+      end--;
     }
-    pos += pattern.size();
-    const size_t end = v.find('"', pos);
-    if (end == std::string_view::npos) return false;
-    const size_t len = std::min(outLen - 1, end - pos);
-    std::strncpy(out, v.data() + pos, len);
-    out[len] = '\0';
+
+    const size_t copyLen = std::min(outLen - 1, end - pos);
+    std::memcpy(out, v.data() + pos, copyLen);
+    out[copyLen] = '\0';
     return true;
   };
 
-  if (!extract(view, "id", userId, sizeof(userId)) || !extract(view, "remix_userkey", userKey, sizeof(userKey))) {
-    setError(BookStoreError::Parse, "Failed to parse login session");
-    return BookStoreError::Parse;
+  // EAPI mirrors use either user_id/user_key or id/remix_userkey.
+  if (extract(view, "user_id", userId, sizeof(userId)) && extract(view, "user_key", userKey, sizeof(userKey))) {
+    LOG_INF("BOOKSTORE", "EAPI login succeeded");
+    return BookStoreError::Ok;
+  }
+  if (extract(view, "id", userId, sizeof(userId)) && extract(view, "remix_userkey", userKey, sizeof(userKey))) {
+    LOG_INF("BOOKSTORE", "EAPI login succeeded");
+    return BookStoreError::Ok;
   }
 
-  return BookStoreError::Ok;
+  if (view.find("Incorrect email or password") != std::string_view::npos ||
+      view.find("Please login") != std::string_view::npos) {
+    setError(BookStoreError::Auth, "Incorrect email or password");
+    return BookStoreError::Auth;
+  }
+
+  setError(BookStoreError::Parse, "Failed to parse login session");
+  return BookStoreError::Parse;
 }
 
 BookStoreError BookStoreClient::search(const char* query, uint32_t page, std::vector<BookStoreBook>& out) {
@@ -374,6 +893,12 @@ BookStoreError BookStoreClient::search(const char* query, uint32_t page, std::ve
   if (!isLoggedIn()) {
     const BookStoreError err = login();
     if (err != BookStoreError::Ok) return err;
+  }
+
+  // Five fixed-size records cost 1,820 bytes. Reserve only after login so this
+  // allocation does not compete with the first TLS handshake.
+  if (out.capacity() < BookStoreSearchParser::MAX_RESULTS) {
+    out.reserve(BookStoreSearchParser::MAX_RESULTS);
   }
 
   char url[256];
@@ -391,102 +916,26 @@ BookStoreError BookStoreClient::search(const char* query, uint32_t page, std::ve
   char cookie[128];
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
-  std::string response;
-  if (!postForm(url, body, response, cookie, userId, userKey)) {
+  searchParser.reset(out);
+  const HttpRequestResult response =
+      postForm(httpClient, url, body, feedSearchResponse, &searchParser, cookie, userId, userKey);
+  if (!response.ok) {
     setError(BookStoreError::Network, "Search request failed");
     return BookStoreError::Network;
   }
-
-  if (response.size() > 16384) {
-    setError(BookStoreError::Network, "Search response too large");
-    return BookStoreError::Network;
+  if (response.status == 401 || response.status == 403 || searchParser.hasAuthenticationError()) {
+    userId[0] = '\0';
+    userKey[0] = '\0';
+    setError(BookStoreError::Auth, "Session expired");
+    return BookStoreError::Auth;
   }
-
-  return parseSearchResponse(response.c_str(), response.size(), out);
-}
-
-BookStoreError BookStoreClient::parseSearchResponse(const char* json, size_t len, std::vector<BookStoreBook>& out) {
-  if (!json || len == 0) {
-    setError(BookStoreError::Parse, "Empty search response");
-    return BookStoreError::Parse;
-  }
-
-  const std::string_view view(json, len);
-  if (view.find("\"success\":1") == std::string_view::npos && view.find("\"success\": 1") == std::string_view::npos) {
-    if (view.find("Please login") != std::string_view::npos) {
-      userId[0] = '\0';
-      userKey[0] = '\0';
-      setError(BookStoreError::Auth, "Session expired");
-      return BookStoreError::Auth;
-    }
+  if (response.status != 200) {
     setError(BookStoreError::Server, "Search request rejected");
     return BookStoreError::Server;
   }
-
-  auto extractString = [](std::string_view v, const char* key, char* out, size_t outLen) {
-    const std::string pattern = std::string("\"") + key + "\":\"";
-    size_t pos = v.find(pattern);
-    if (pos == std::string_view::npos) {
-      out[0] = '\0';
-      return;
-    }
-    pos += pattern.size();
-    const size_t end = v.find('"', pos);
-    if (end == std::string_view::npos) {
-      out[0] = '\0';
-      return;
-    }
-    const size_t copyLen = std::min(outLen - 1, end - pos);
-    std::strncpy(out, v.data() + pos, copyLen);
-    out[copyLen] = '\0';
-  };
-
-  auto extractUint = [](std::string_view v, const char* key) -> uint32_t {
-    const std::string pattern = std::string("\"") + key + "\":";
-    size_t pos = v.find(pattern);
-    if (pos == std::string_view::npos) return 0;
-    pos += pattern.size();
-    // skip whitespace and quotes
-    while (pos < v.size() && (v[pos] == ' ' || v[pos] == '"')) pos++;
-    uint32_t value = 0;
-    while (pos < v.size() && v[pos] >= '0' && v[pos] <= '9') {
-      value = value * 10 + (v[pos] - '0');
-      pos++;
-    }
-    return value;
-  };
-
-  // Find the books array. A simple approach: split the response by occurrences of {"id":
-  out.reserve(5);
-  size_t pos = 0;
-  while (out.size() < 5) {
-    pos = view.find("{\"id\":", pos);
-    if (pos == std::string_view::npos) break;
-
-    // Find matching closing brace at brace depth 0
-    size_t end = pos + 1;
-    int depth = 1;
-    while (end < view.size() && depth > 0) {
-      if (view[end] == '{') depth++;
-      else if (view[end] == '}') depth--;
-      end++;
-    }
-
-    const std::string_view bookView(view.data() + pos, end - pos);
-    BookStoreBook book;
-    extractString(bookView, "id", book.id, sizeof(book.id));
-    extractString(bookView, "hash", book.hash, sizeof(book.hash));
-    extractString(bookView, "title", book.title, sizeof(book.title));
-    extractString(bookView, "author", book.author, sizeof(book.author));
-    extractString(bookView, "extension", book.extension, sizeof(book.extension));
-    extractString(bookView, "language", book.language, sizeof(book.language));
-    extractString(bookView, "filesizeString", book.filesizeString, sizeof(book.filesizeString));
-    book.year = extractUint(bookView, "year");
-
-    if (book.id[0] != '\0') {
-      out.push_back(book);
-    }
-    pos = end;
+  if (searchParser.hasError() || !searchParser.sawBooks()) {
+    setError(BookStoreError::Parse, "Failed to parse search response");
+    return BookStoreError::Parse;
   }
 
   if (out.empty()) {
@@ -494,6 +943,7 @@ BookStoreError BookStoreClient::parseSearchResponse(const char* json, size_t len
     return BookStoreError::NotFound;
   }
 
+  LOG_INF("BOOKSTORE", "Search parsed %u result(s)", static_cast<unsigned>(out.size()));
   return BookStoreError::Ok;
 }
 
@@ -515,56 +965,31 @@ BookStoreError BookStoreClient::resolveDownloadUrl(const BookStoreBook& book, st
   char cookie[128];
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
-  std::string response;
-  // /eapi/book/<id>/<hash>/file is a GET endpoint — use getRequest, not postForm.
-  if (!getRequest(url, response, cookie, userId, userKey)) {
+  searchParser.resetDownload(outUrl);
+  const HttpRequestResult response =
+      getRequest(httpClient, url, feedSearchResponse, &searchParser, cookie, userId, userKey);
+  if (!response.ok) {
     setError(BookStoreError::Network, "Failed to resolve download link");
     return BookStoreError::Network;
   }
-
-  return parseDownloadLinkResponse(response.c_str(), response.size(), outUrl);
-}
-
-BookStoreError BookStoreClient::parseDownloadLinkResponse(const char* json, size_t len, std::string& outUrl) {
-  if (!json || len == 0) {
-    setError(BookStoreError::Parse, "Empty download link response");
-    return BookStoreError::Parse;
+  if (response.status == 401 || response.status == 403 || searchParser.hasAuthenticationError()) {
+    userId[0] = '\0';
+    userKey[0] = '\0';
+    setError(BookStoreError::Auth, "Session expired");
+    return BookStoreError::Auth;
   }
-
-  const std::string_view view(json, len);
-  if (view.find("\"success\":1") == std::string_view::npos && view.find("\"success\": 1") == std::string_view::npos) {
-    if (view.find("Download limit reached") != std::string_view::npos) {
-      setError(BookStoreError::Quota, "Download limit reached");
-      return BookStoreError::Quota;
-    }
-    if (view.find("Please login") != std::string_view::npos) {
-      userId[0] = '\0';
-      userKey[0] = '\0';
-      setError(BookStoreError::Auth, "Session expired");
-      return BookStoreError::Auth;
-    }
+  if (searchParser.hasQuotaError()) {
+    setError(BookStoreError::Quota, "Download limit reached");
+    return BookStoreError::Quota;
+  }
+  if (response.status != 200) {
     setError(BookStoreError::Server, "Download link request rejected");
     return BookStoreError::Server;
   }
-
-  const char* key = "\"downloadLink\":\"";
-  size_t pos = view.find(key);
-  if (pos == std::string_view::npos) {
-    key = "\"downloadLink\": \"";
-    pos = view.find(key);
-  }
-  if (pos == std::string_view::npos) {
+  if (searchParser.hasError() || !searchParser.sawDownloadLink()) {
     setError(BookStoreError::Parse, "No download link in response");
     return BookStoreError::Parse;
   }
-  pos += std::strlen(key);
-  const size_t end = view.find('"', pos);
-  if (end == std::string_view::npos) {
-    setError(BookStoreError::Parse, "Malformed download link");
-    return BookStoreError::Parse;
-  }
-
-  outUrl.assign(view.data() + pos, end - pos);
   return BookStoreError::Ok;
 }
 
@@ -575,13 +1000,47 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   char cookie[128];
   std::snprintf(cookie, sizeof(cookie), "remix_userid=%s; remix_userkey=%s", userId, userKey);
 
+#ifdef ESP_PLATFORM
+  FsFile file;
+  if (!Storage.openFileForWrite("BOOKSTORE", destPath.c_str(), file)) {
+    setError(BookStoreError::File, "Could not create destination file");
+    return BookStoreError::File;
+  }
+
+  DownloadResponseSink sink{&file, &progress, cancelFlag};
+  const HttpRequestResult response =
+      performRequest(httpClient, url.c_str(), HTTP_METHOD_GET, nullptr, writeDownloadResponse, &sink,
+                     "DOWNLOAD", cookie, userId, userKey, 120000, 200, startDownloadResponse);
+  file.close();
+
+  if (sink.cancelled) {
+    Storage.remove(destPath.c_str());
+    setError(BookStoreError::Cancelled, "Download cancelled");
+    return BookStoreError::Cancelled;
+  }
+  if (sink.writeFailed) {
+    Storage.remove(destPath.c_str());
+    setError(BookStoreError::File, "SD write failed");
+    return BookStoreError::File;
+  }
+  if (response.status != 200) {
+    Storage.remove(destPath.c_str());
+    setError(BookStoreError::File, "Download rejected by server");
+    return BookStoreError::File;
+  }
+  if (!response.ok) {
+    Storage.remove(destPath.c_str());
+    setError(BookStoreError::Network, "Download interrupted");
+    return BookStoreError::Network;
+  }
+#else
   // HttpDownloader does not expose a custom Cookie header, so download directly with esp_http_client.
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.timeout_ms = 120000;
-  config.buffer_size = 2048;
-  config.buffer_size_tx = 1024;
-  config.cert_pem = R13_PEM;
+  config.buffer_size = 1024;
+  config.buffer_size_tx = 512;
+  config.cert_pem = BOOKSTORE_CA_PEM;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -597,29 +1056,30 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     esp_http_client_set_header(client, "remix-userkey", userKey);
   }
   esp_http_client_set_header(client, "Cookie", cookie);
+  logTlsClock("DOWNLOAD");
 
   esp_err_t err = esp_http_client_open(client, 0);
   if (err != ESP_OK) {
     LOG_ERR("BOOKSTORE", "Download open failed: %s", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
+    logTlsFailure(client, "Download open failed");
+    cleanupHttpClient(client, false, "DOWNLOAD");
     setError(BookStoreError::Network, "Download request failed");
     return BookStoreError::Network;
   }
 
   const int64_t totalLen = esp_http_client_fetch_headers(client);
   const int status = esp_http_client_get_status_code(client);
-  if (status != 200) {
-    LOG_ERR("BOOKSTORE", "Download status %d", status);
-    
-    esp_http_client_cleanup(client);
+  if (totalLen < 0 || status != 200) {
+    LOG_ERR("BOOKSTORE", "Download header fetch failed: len=%lld status=%d", static_cast<long long>(totalLen),
+            status);
+    cleanupHttpClient(client, true, "DOWNLOAD");
     setError(BookStoreError::File, "Download rejected by server");
     return BookStoreError::File;
   }
 
   FsFile file;
   if (!Storage.openFileForWrite("BOOKSTORE", destPath.c_str(), file)) {
-    
-    esp_http_client_cleanup(client);
+    cleanupHttpClient(client, true, "DOWNLOAD");
     setError(BookStoreError::File, "Could not create destination file");
     return BookStoreError::File;
   }
@@ -628,7 +1088,8 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     progress(0, totalLen > 0 ? static_cast<size_t>(totalLen) : 0);
   }
 
-  char buffer[2048];
+  // One SD-sector buffer keeps stack use bounded while avoiding partial-sector writes.
+  char buffer[512];
   int readLen = 0;
   size_t totalRead = 0;
   bool cancelled = false;
@@ -636,8 +1097,7 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
     if (file.write(buffer, readLen) != static_cast<size_t>(readLen)) {
       file.close();
       Storage.remove(destPath.c_str());
-      
-      esp_http_client_cleanup(client);
+      cleanupHttpClient(client, true, "DOWNLOAD");
       setError(BookStoreError::File, "SD write failed");
       return BookStoreError::File;
     }
@@ -651,13 +1111,20 @@ BookStoreError BookStoreClient::downloadFile(const std::string& url, const std::
   }
 
   file.close();
-  esp_http_client_cleanup(client);
+  cleanupHttpClient(client, true, "DOWNLOAD");
+
+  if (readLen < 0) {
+    Storage.remove(destPath.c_str());
+    setError(BookStoreError::Network, "Download interrupted");
+    return BookStoreError::Network;
+  }
 
   if (cancelled) {
     Storage.remove(destPath.c_str());
     setError(BookStoreError::Cancelled, "Download cancelled");
     return BookStoreError::Cancelled;
   }
+#endif
 
   // Verify the downloaded file is not an HTML error page
   FsFile verifyFile;

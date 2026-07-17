@@ -590,16 +590,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_SYSTEM));
 #endif
 
-    // --- Book Store ---
-    add(SettingInfo::String(StrId::STR_BOOK_STORE_BASE_URL, SETTINGS.bookStoreBaseUrl,
-                            sizeof(SETTINGS.bookStoreBaseUrl), "bookStoreBaseUrl", StrId::STR_BOOK_STORE));
-    add(SettingInfo::String(StrId::STR_BOOK_STORE_EMAIL, SETTINGS.bookStoreEmail,
-                            sizeof(SETTINGS.bookStoreEmail), "bookStoreEmail", StrId::STR_BOOK_STORE));
-    add(SettingInfo::String(StrId::STR_BOOK_STORE_PASSWORD, SETTINGS.bookStorePassword,
-                            sizeof(SETTINGS.bookStorePassword), "bookStorePassword", StrId::STR_BOOK_STORE));
-    add(SettingInfo::String(StrId::STR_BOOK_STORE_DOWNLOAD_PATH, SETTINGS.bookStoreDownloadPath,
-                            sizeof(SETTINGS.bookStoreDownloadPath), "bookStoreDownloadPath", StrId::STR_BOOK_STORE));
-
     // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
     add(SettingInfo::DynamicString(
         StrId::STR_KOREADER_USERNAME, [] { return KOREADER_STORE.getUsername(); },

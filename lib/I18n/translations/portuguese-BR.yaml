@@ -1,6 +1,7 @@
 _language_name: "Português (Brasil)"
 _language_code: "PT"
 _order: "5"
+STR_BOOK_STORE_REQUEST_FAILED: "Falha na requisição da loja"
 STR_CROSSINK: "CrossInk"
 STR_BOOTING: "INICIANDO"
 STR_SLEEPING: "EM REPOUSO"

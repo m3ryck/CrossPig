@@ -52,7 +52,7 @@ let allSettings = [];
     }
 
     if (setting.type === 'string') {
-      const inputType = setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      const inputType = setting.secret || setting.name.toLowerCase().includes('password') ? 'password' : 'text';
       const val = setting.value || '';
       return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
         ' oninput="handleSettingChanged(\'' + setting.key + '\')">';

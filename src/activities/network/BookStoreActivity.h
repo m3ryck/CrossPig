@@ -87,7 +87,7 @@ class BookStoreActivity final : public Activity {
   void onSearchCompleted(BookStoreError err);
   void onDownloadLinkResolved(BookStoreError err);
   void onDownloadCompleted(BookStoreError err);
-  void ensureClient();
+  bool ensureClient();
   void ensureWifiThen(std::function<void()> action);
   void buildDownloadPath();
   void launchNetworkTask();

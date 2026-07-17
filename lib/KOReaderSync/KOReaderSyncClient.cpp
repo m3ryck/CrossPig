@@ -117,10 +117,11 @@ KOReaderSyncClient::Error validateAuthResponse(const char* body) {
 // KOSync's TLS-1.3 servers can't be reached through the precompiled system
 // mbedTLS (TLS 1.3 is stubbed out), so requests run over wolfSSL via
 // SecureHttpClient. The handshake still needs working heap; gate on it. wolfSSL's
-// footprint is smaller than mbedTLS's old ~48KB peak, but keep a conservative
-// floor. Check both total free heap and largest contiguous block so fragmented
-// heap does not fall through into a failed TLS allocation path.
-constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+// footprint is smaller than mbedTLS's old ~48KB peak. WiFi itself commonly
+// leaves a largest contiguous block around 52 KB on X3, so a 55 KB floor rejects
+// healthy connections before wolfSSL has a chance to start. Keep a 50 KB floor
+// and still check both total free heap and the largest contiguous block.
+constexpr uint32_t MIN_HEAP_FOR_TLS = 50 * 1024;
 
 #ifdef SIMULATOR
 void addAuthHeaders(HTTPClient& http) {
