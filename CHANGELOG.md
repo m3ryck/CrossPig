@@ -3,6 +3,8 @@
 ### Added
 
 - Custom UI Theme editor: combine Home, Header, List, Menu, Popup, Input, Hints, and Status Bar renderers from built-in or SD-card `/themes/<id>/theme.json` packages.
+- Wi-Fi portal theme management: import, activate, replace, and remove declarative `.cptheme` packages with device-side validation and staged publication with rollback.
+- Declarative themes can customize Home geometry, headers, lists, menus, popups, keyboard/input, button hints, and reader status metrics, with matching previews in Theme Studio.
 
 - Dashboard UI theme for the Home screen, showing the current book cover and reading stats.
 - Nearby Position Sync for sending or applying the current EPUB position between two CrossInk devices over ESP-NOW.
@@ -12,6 +14,7 @@
 
 ### Changed
 
+- Theme Studio now uses a responsive React/shadcn interface with grouped component controls, synchronized sliders and numeric inputs, accessible switches, and tabbed live previews.
 - Large EPUBs, SD-card font-heavy books, and cover thumbnails now open, index, and generate more reliably under low-memory conditions.
 - Home and sleep screens now load more cover and thumbnail data only when needed, reducing reader startup work and reusing cached cover data where possible.
 - Built-in reader font choices have been reduced to Lexend Deca and Bitter, reducing firmware size while keeping fallback glyph coverage.

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 2,
+  "engine": "declarative",
+  "id": "monochrome",
+  "name": "Monochrome",
+  "home": {
+    "topPadding": 56,
+    "coverAreaHeight": 242,
+    "menuTopOffset": 16,
+    "cover": {
+      "x": 200,
+      "y": 20,
+      "width": 600,
+      "height": 820,
+      "cornerRadius": 10
+  },
+  "header": {
+    "height": 84,
+    "topPadding": 5,
+    "spacing": 16,
+    "sidePadding": 20,
+    "tabHeight": 40,
+    "tabSpacing": 8
+  },
+  "list": {
+    "rowHeight": 36,
+    "subtitleRowHeight": 60
+  },
+  "menu": {
+      "columns": 2,
+      "rowHeight": 54,
+      "gap": 10
+    }
+  },
+  "popup": {
+    "top": 165,
+    "marginX": 16,
+    "marginY": 12,
+    "cornerRadius": 6,
+    "frameThickness": 2,
+    "progressHeight": 4,
+    "bold": false,
+    "inverted": false
+  },
+  "input": {
+    "keyWidth": 31,
+    "keyHeight": 40,
+    "keySpacing": 0,
+    "cornerRadius": 6,
+    "widthPercent": 90,
+    "textFieldPadding": 6,
+    "textFieldThickness": 1,
+    "cursorThickness": 3,
+    "fillUnselected": false,
+    "outlineUnselected": false
+  },
+  "hints": {
+    "height": 40,
+    "sideWidth": 30
+  },
+  "status": {
+    "marginX": 5,
+    "marginY": 19,
+    "progressHeight": 16
+  }
+}

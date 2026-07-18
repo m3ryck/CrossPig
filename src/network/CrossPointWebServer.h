@@ -117,6 +117,14 @@ class CrossPointWebServer {
   void handleFontUploadData();
   void handleFontDelete();
 
+  // Declarative theme package management.
+  void handleThemesPage() const;
+  void handleThemeList();
+  void handleThemeStage();
+  void handleThemeInstall();
+  void handleThemeActivate();
+  void handleThemeDelete();
+
   // Font upload state
   struct FontUploadState {
     HalFile file;

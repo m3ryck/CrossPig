@@ -47,6 +47,7 @@ class UITheme {
   const ThemeMetrics* currentMetrics;
   std::unique_ptr<BaseTheme> currentTheme;
   CrossPointSettings::UI_THEME activeBaseTheme = CrossPointSettings::LYRA;
+  ThemeMetrics declarativeMetrics = BaseMetrics::values;
 };
 
 // Helper macro to access current theme

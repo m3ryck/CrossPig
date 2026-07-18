@@ -398,7 +398,8 @@ void SettingsActivity::openEnumOptionPicker(const SettingInfo& setting) {
     syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
     SETTINGS.saveToFile();
     if (selectedSetting.nameId == StrId::STR_UI_THEME &&
-        SETTINGS.uiTheme == CrossPointSettings::CUSTOM_THEME) {
+        SETTINGS.uiTheme == CrossPointSettings::CUSTOM_THEME &&
+        std::strcmp(SETTINGS.customThemeId, CustomThemeRegistry::kComposerId) == 0) {
       auto composer = makeUniqueNoThrow<ThemeComposerActivity>(renderer, mappedInput);
       if (!composer) {
         LOG_ERR("THEME", "Out of memory opening Custom theme editor");

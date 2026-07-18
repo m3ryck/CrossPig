@@ -20,6 +20,8 @@
 
 #include "AppVersion.h"
 #include "CrossPointSettings.h"
+#include "components/CustomThemeRegistry.h"
+#include "components/ThemeInstaller.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontSystem.h"
@@ -32,6 +34,7 @@
 #include "html/LogoPng.generated.h"
 #include "html/SettingsPageHtml.generated.h"
 #include "html/StyleCss.generated.h"
+#include "html/ThemesPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
@@ -214,6 +217,12 @@ void CrossPointWebServer::begin() {
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
   server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); });
+  server->on("/themes", HTTP_GET, [this] { handleThemesPage(); });
+  server->on("/api/themes", HTTP_GET, [this] { handleThemeList(); });
+  server->on("/api/themes/stage", HTTP_POST, [this] { handleThemeStage(); });
+  server->on("/api/themes/install", HTTP_POST, [this] { handleThemeInstall(); });
+  server->on("/api/themes/activate", HTTP_POST, [this] { handleThemeActivate(); });
+  server->on("/api/themes/delete", HTTP_POST, [this] { handleThemeDelete(); });
 
   // OPDS server endpoints
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
@@ -1970,4 +1979,73 @@ void CrossPointWebServer::handleFontDelete() {
     server->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     LOG_ERR("WEB", "Failed to delete font family: %s", familyName);
   }
+}
+
+void CrossPointWebServer::handleThemesPage() const {
+  server->sendHeader("Content-Encoding", "gzip");
+  server->send_P(200, "text/html", ThemesPageHtml, ThemesPageHtmlCompressedSize);
+}
+
+void CrossPointWebServer::handleThemeList() {
+  CUSTOM_THEMES.discover();
+  JsonDocument doc;
+  JsonArray themes = doc["themes"].to<JsonArray>();
+  for (const auto& theme : CUSTOM_THEMES.getThemes()) {
+    if (theme.kind != CustomThemeInfo::Kind::DeclarativeV2) continue;
+    JsonObject item = themes.add<JsonObject>();
+    item["id"] = theme.id; item["name"] = theme.name;
+    item["active"] = SETTINGS.uiTheme == CrossPointSettings::CUSTOM_THEME &&
+                     std::strcmp(SETTINGS.customThemeId, theme.id) == 0;
+  }
+  String response; serializeJson(doc, response); server->send(200, "application/json", response);
+}
+
+static bool readThemeRequest(WebServer* server, char* id, size_t idSize, bool& replace) {
+  JsonDocument doc;
+  if (deserializeJson(doc, server->arg("plain"))) return false;
+  const char* value = doc["id"] | "";
+  std::snprintf(id, idSize, "%s", value);
+  replace = doc["replace"] | false;
+  return ThemeInstaller::isSafeThemeId(id);
+}
+
+void CrossPointWebServer::handleThemeInstall() {
+  char id[CustomThemeInfo::kIdCapacity], error[96] = "Invalid request"; bool replace = false;
+  if (!readThemeRequest(server.get(), id, sizeof(id), replace) || !ThemeInstaller::publish(id, replace, error, sizeof(error))) {
+    server->send(400, "application/json", String("{\"error\":\"") + error + "\"}"); return;
+  }
+  server->send(200, "application/json", "{\"ok\":true}");
+}
+
+void CrossPointWebServer::handleThemeStage() {
+  char id[CustomThemeInfo::kIdCapacity], error[96] = "Invalid request"; bool ignored = false;
+  if (!readThemeRequest(server.get(), id, sizeof(id), ignored) ||
+      !ThemeInstaller::prepareStaging(id, error, sizeof(error))) {
+    server->send(400, "application/json", String("{\"error\":\"") + error + "\"}");
+    return;
+  }
+  server->send(200, "application/json", "{\"ok\":true}");
+}
+
+void CrossPointWebServer::handleThemeActivate() {
+  char id[CustomThemeInfo::kIdCapacity]; bool ignored = false;
+  CUSTOM_THEMES.discover();
+  const CustomThemeInfo* theme = readThemeRequest(server.get(), id, sizeof(id), ignored) ? CUSTOM_THEMES.find(id) : nullptr;
+  if (!theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV2) {
+    server->send(400, "application/json", "{\"error\":\"Unknown theme\"}"); return;
+  }
+  SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
+  std::snprintf(SETTINGS.customThemeId, sizeof(SETTINGS.customThemeId), "%s", id);
+  SETTINGS.saveToFile(); server->send(200, "application/json", "{\"ok\":true}");
+}
+
+void CrossPointWebServer::handleThemeDelete() {
+  char id[CustomThemeInfo::kIdCapacity], error[96] = "Invalid request"; bool ignored = false;
+  CUSTOM_THEMES.discover();
+  const CustomThemeInfo* theme = readThemeRequest(server.get(), id, sizeof(id), ignored) ? CUSTOM_THEMES.find(id) : nullptr;
+  if (!theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV2 ||
+      !ThemeInstaller::remove(id, error, sizeof(error))) {
+    server->send(400, "application/json", String("{\"error\":\"") + error + "\"}"); return;
+  }
+  server->send(200, "application/json", "{\"ok\":true}");
 }

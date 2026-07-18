@@ -273,28 +273,47 @@ inline SettingInfo buildUiThemeSetting(const CustomThemeRegistry& registry) {
                         I18N.get(StrId::STR_THEME_DASHBOARD), I18N.get(StrId::STR_THEME_LYRA),
                         I18N.get(StrId::STR_THEME_LYRA_EXTENDED), I18N.get(StrId::STR_THEME_LYRA_CAROUSEL),
                         I18N.get(StrId::STR_THEME_ROUNDEDRAFF)};
-  (void)registry;
   s.enumStringValues.push_back(I18N.get(StrId::STR_THEME_CUSTOM));
+  for (const auto& theme : registry.getThemes()) {
+    if (theme.kind == CustomThemeInfo::Kind::DeclarativeV2) s.enumStringValues.push_back(theme.name);
+  }
 
-  s.valueGetter = []() -> uint8_t {
+  s.valueGetter = [&registry]() -> uint8_t {
     if (SETTINGS.uiTheme != CrossPointSettings::CUSTOM_THEME) {
       for (uint8_t i = 0; i < sizeof(builtins); ++i) {
         if (SETTINGS.uiTheme == builtins[i]) return i;
       }
       return 0;
     }
+    const auto& themes = registry.getThemes();
+    for (size_t i = 0, display = 8; i < themes.size(); ++i) {
+      if (themes[i].kind != CustomThemeInfo::Kind::DeclarativeV2) continue;
+      if (std::strcmp(SETTINGS.customThemeId, themes[i].id) == 0) return static_cast<uint8_t>(display);
+      display++;
+    }
     return 7;
   };
-  s.valueSetter = [](uint8_t index) {
+  s.valueSetter = [&registry](uint8_t index) {
     if (index < sizeof(builtins)) {
       SETTINGS.uiTheme = builtins[index];
       SETTINGS.customThemeId[0] = '\0';
       return;
     }
-    if (index != 7) return;
-    SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
-    std::strncpy(SETTINGS.customThemeId, CustomThemeRegistry::kComposerId, sizeof(SETTINGS.customThemeId) - 1);
-    SETTINGS.customThemeId[sizeof(SETTINGS.customThemeId) - 1] = '\0';
+    if (index == 7) {
+      SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
+      std::strncpy(SETTINGS.customThemeId, CustomThemeRegistry::kComposerId, sizeof(SETTINGS.customThemeId) - 1);
+      SETTINGS.customThemeId[sizeof(SETTINGS.customThemeId) - 1] = '\0';
+      return;
+    }
+    size_t declarativeIndex = static_cast<size_t>(index - 8);
+    for (const auto& theme : registry.getThemes()) {
+      if (theme.kind != CustomThemeInfo::Kind::DeclarativeV2) continue;
+      if (declarativeIndex-- != 0) continue;
+      SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
+      std::strncpy(SETTINGS.customThemeId, theme.id, sizeof(SETTINGS.customThemeId) - 1);
+      SETTINGS.customThemeId[sizeof(SETTINGS.customThemeId) - 1] = '\0';
+      return;
+    }
   };
   return s;
 }

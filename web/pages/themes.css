@@ -1,0 +1,2 @@
+#themes .theme { display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid #ddd; }
+#status.error { color:#b00020; } #status.ok { color:#176b2c; }

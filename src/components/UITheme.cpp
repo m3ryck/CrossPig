@@ -13,6 +13,7 @@
 #include "RecentBooksStore.h"
 #include "Memory.h"
 #include "components/CompositeTheme.h"
+#include "components/DeclarativeTheme.h"
 #include "components/CustomThemeRegistry.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
@@ -65,6 +66,54 @@ void UITheme::reload() {
       customTheme = CUSTOM_THEMES.find(SETTINGS.customThemeId);
     }
     if (customTheme) {
+      if (customTheme->kind == CustomThemeInfo::Kind::DeclarativeV2) {
+        auto declarative = makeUniqueNoThrow<DeclarativeTheme>(*customTheme);
+        if (!declarative) {
+          LOG_ERR("UI", "OOM creating declarative theme %s", customTheme->id);
+          return;
+        }
+        activeBaseTheme = CrossPointSettings::LYRA;
+        declarativeMetrics = LyraMetrics::values;
+        declarativeMetrics.headerHeight = customTheme->headerHeight;
+        declarativeMetrics.topPadding = customTheme->topPadding;
+        declarativeMetrics.verticalSpacing = customTheme->verticalSpacing;
+        declarativeMetrics.contentSidePadding = customTheme->contentSidePadding;
+        declarativeMetrics.tabBarHeight = customTheme->tabBarHeight;
+        declarativeMetrics.tabSpacing = customTheme->tabSpacing;
+        declarativeMetrics.listRowHeight = customTheme->listRowHeight;
+        declarativeMetrics.listWithSubtitleRowHeight = customTheme->listSubtitleRowHeight;
+        declarativeMetrics.homeTopPadding = customTheme->homeTopPadding;
+        declarativeMetrics.homeCoverTileHeight = customTheme->homeCoverAreaHeight;
+        declarativeMetrics.homeMenuTopOffset = customTheme->homeMenuTopOffset;
+        declarativeMetrics.menuRowHeight = customTheme->menuRowHeight > 0 ? customTheme->menuRowHeight : 56;
+        declarativeMetrics.menuSpacing = customTheme->menuGap;
+        declarativeMetrics.popupTopOffsetRatio = customTheme->popupTopPermille / 1000.0f;
+        declarativeMetrics.popupMarginX = customTheme->popupMarginX;
+        declarativeMetrics.popupMarginY = customTheme->popupMarginY;
+        declarativeMetrics.popupCornerRadius = customTheme->popupCornerRadius;
+        declarativeMetrics.popupFrameThickness = customTheme->popupFrameThickness;
+        declarativeMetrics.popupProgressBarHeight = customTheme->popupProgressHeight;
+        declarativeMetrics.popupTextBold = customTheme->popupTextBold;
+        declarativeMetrics.popupTextInverted = customTheme->popupTextInverted;
+        declarativeMetrics.keyboardKeyWidth = customTheme->keyboardKeyWidth;
+        declarativeMetrics.keyboardKeyHeight = customTheme->keyboardKeyHeight;
+        declarativeMetrics.keyboardKeySpacing = customTheme->keyboardKeySpacing;
+        declarativeMetrics.keyboardKeyCornerRadius = customTheme->keyboardCornerRadius;
+        declarativeMetrics.keyboardWidthPercent = customTheme->keyboardWidthPercent;
+        declarativeMetrics.keyboardFillUnselected = customTheme->keyboardFillUnselected;
+        declarativeMetrics.keyboardOutlineAllUnselected = customTheme->keyboardOutlineUnselected;
+        declarativeMetrics.textFieldHorizontalPadding = customTheme->textFieldPadding;
+        declarativeMetrics.textFieldNormalThickness = customTheme->textFieldThickness;
+        declarativeMetrics.textFieldCursorThickness = customTheme->textFieldCursorThickness;
+        declarativeMetrics.buttonHintsHeight = customTheme->hintsHeight;
+        declarativeMetrics.sideButtonHintsWidth = customTheme->sideHintsWidth;
+        declarativeMetrics.statusBarHorizontalMargin = customTheme->statusMarginX;
+        declarativeMetrics.statusBarVerticalMargin = customTheme->statusMarginY;
+        declarativeMetrics.progressBarHeight = customTheme->progressBarHeight;
+        currentMetrics = &declarativeMetrics;
+        currentTheme = std::move(declarative);
+        return;
+      }
       LOG_DBG("UI", "Using custom theme %s (base %d)", customTheme->id, customTheme->baseTheme);
       themeType = static_cast<CrossPointSettings::UI_THEME>(customTheme->baseTheme);
       setTheme(themeType);
