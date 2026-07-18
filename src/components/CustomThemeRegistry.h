@@ -10,10 +10,13 @@
 struct CustomThemeInfo {
   static constexpr size_t kIdCapacity = 33;
   static constexpr size_t kNameCapacity = 49;
+  static constexpr size_t kMaxSettingsOrderItems = 8;
 
   char id[kIdCapacity] = {};
   char name[kNameCapacity] = {};
-  enum class Kind : uint8_t { ComposedV1, DeclarativeV2 } kind = Kind::ComposedV1;
+  enum class Kind : uint8_t { ComposedV1, DeclarativeV2, DeclarativeV3 } kind = Kind::ComposedV1;
+  enum class SettingsLayout : uint8_t { List, Cards, Grid } settingsLayout = SettingsLayout::List;
+  enum class HomeLayout : uint8_t { Spotlight, Shelf, Dashboard } homeLayout = HomeLayout::Spotlight;
   uint8_t baseTheme = 0;
   uint8_t headerTheme = 0;
   uint8_t listTheme = 0;
@@ -34,6 +37,14 @@ struct CustomThemeInfo {
   uint16_t homeTopPadding = 56;
   uint16_t homeCoverAreaHeight = 242;
   uint16_t homeMenuTopOffset = 16;
+  uint8_t homeRecentBooks = 1;
+  uint8_t homeBookGap = 10;
+  bool homeShowCover = true;
+  bool homeShowTitle = true;
+  bool homeShowAuthor = false;
+  bool homeShowProgress = false;
+  bool homeShowBookStats = false;
+  bool homeShowGlobalStats = false;
   uint8_t menuColumns = 1;
   uint16_t menuRowHeight = 0;
   uint16_t menuGap = 8;
@@ -71,11 +82,32 @@ struct CustomThemeInfo {
   uint16_t statusMarginX = 5;
   uint16_t statusMarginY = 19;
   uint16_t progressBarHeight = 16;
+
+  // Declarative v3 Settings screen. Only hashes of stable SettingInfo keys are
+  // retained; the manifest DOM and its strings are released after discovery.
+  uint8_t settingsColumns = 1;
+  uint8_t settingsGap = 8;
+  uint8_t settingsCardRadius = 6;
+  uint8_t settingsOrderCount = 0;
+  uint16_t settingsCardHeight = 64;
+  uint32_t settingsOrderHashes[kMaxSettingsOrderItems] = {};
+
+  bool isDeclarative() const { return kind == Kind::DeclarativeV2 || kind == Kind::DeclarativeV3; }
+
+  static uint32_t stableIdHash(const char* value) {
+    uint32_t hash = 2166136261u;
+    if (!value) return hash;
+    while (*value) {
+      hash ^= static_cast<uint8_t>(*value++);
+      hash *= 16777619u;
+    }
+    return hash;
+  }
 };
 
-// The registry retains at most 16 summaries, keeping the persistent heap
-// budget for all custom themes at or below 4 KB.
-static_assert(sizeof(CustomThemeInfo) <= 256, "CustomThemeInfo exceeded its fixed registry budget");
+// The registry retains at most 16 summaries. v3 adds eight stable setting IDs,
+// but the complete fixed-capacity registry remains bounded to at most 5 KB.
+static_assert(sizeof(CustomThemeInfo) <= 320, "CustomThemeInfo exceeded its fixed registry budget");
 
 class CustomThemeRegistry {
  public:

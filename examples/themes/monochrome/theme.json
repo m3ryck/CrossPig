@@ -1,18 +1,28 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "engine": "declarative",
   "id": "monochrome",
   "name": "Monochrome",
   "home": {
     "topPadding": 56,
-    "coverAreaHeight": 242,
-    "menuTopOffset": 16,
+    "coverAreaHeight": 340,
+    "menuTopOffset": 12,
+    "layout": "shelf",
+    "recentBooks": 3,
+    "bookGap": 10,
+    "showCover": true,
+    "showTitle": true,
+    "showAuthor": false,
+    "showProgress": true,
+    "showBookStats": false,
+    "showGlobalStats": true,
     "cover": {
       "x": 200,
       "y": 20,
       "width": 600,
       "height": 820,
       "cornerRadius": 10
+    }
   },
   "header": {
     "height": 84,
@@ -22,16 +32,8 @@
     "tabHeight": 40,
     "tabSpacing": 8
   },
-  "list": {
-    "rowHeight": 36,
-    "subtitleRowHeight": 60
-  },
-  "menu": {
-      "columns": 2,
-      "rowHeight": 54,
-      "gap": 10
-    }
-  },
+  "list": { "rowHeight": 36, "subtitleRowHeight": 60 },
+  "menu": { "columns": 2, "rowHeight": 54, "gap": 10 },
   "popup": {
     "top": 165,
     "marginX": 16,
@@ -54,13 +56,16 @@
     "fillUnselected": false,
     "outlineUnselected": false
   },
-  "hints": {
-    "height": 40,
-    "sideWidth": 30
-  },
-  "status": {
-    "marginX": 5,
-    "marginY": 19,
-    "progressHeight": 16
+  "hints": { "height": 40, "sideWidth": 30 },
+  "status": { "marginX": 5, "marginY": 19, "progressHeight": 16 },
+  "screens": {
+    "settings": {
+      "layout": "grid",
+      "columns": 2,
+      "gap": 8,
+      "cardRadius": 8,
+      "cardHeight": 64,
+      "order": ["uiTheme", "sleepScreen"]
+    }
   }
 }

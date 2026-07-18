@@ -2,6 +2,7 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <iterator>
 #include <string>
@@ -219,11 +220,15 @@ inline bool settingShowsNavigationCaret(const SettingInfo& setting) {
 }
 
 class SettingsActivity final : public Activity {
+  static constexpr size_t maxDeclarativeSettingsNodes = 48;
+
   ButtonNavigator buttonNavigator;
 
   int selectedCategoryIndex = 0;  // Currently selected category
   int selectedSettingIndex = 0;
   int settingsCount = 0;
+  std::array<uint8_t, maxDeclarativeSettingsNodes> displayOrder = {};
+  bool usesDeclarativeSettingsOrder = false;
 
   // Per-category settings derived from shared list + device-only actions
   std::vector<SettingInfo> displaySettings;
@@ -254,6 +259,11 @@ class SettingsActivity final : public Activity {
 
   void enterCategory(int categoryIndex);
   void setCurrentSettingsForCategory();
+  void rebuildDisplayOrder();
+  const SettingInfo* settingAtDisplayIndex(int index) const;
+  bool usesSpatialSettingsLayout() const;
+  void handleSpatialNavigation();
+  void drawDeclarativeSettingsCards(Rect rect) const;
   StrId activeSubmenuTitleId() const;
   void openSubmenu(SettingAction action);
   void closeSubmenu();

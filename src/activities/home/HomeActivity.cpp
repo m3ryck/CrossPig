@@ -33,6 +33,7 @@
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
 #include "SavedItemsHomeActivity.h"
+#include "components/CustomThemeRegistry.h"
 #include "components/UITheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
@@ -532,6 +533,16 @@ int getHomeMenuSelectionOffset(const std::vector<RecentBook>& recentBooks) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   return metrics.homeContinueReadingInMenu ? 0 : getVisibleRecentBookCount(recentBooks);
 }
+
+const CustomThemeInfo* declarativeHomeInfo() {
+  const CustomThemeInfo* info = GUI.declarativeInfo();
+  return info && info->kind == CustomThemeInfo::Kind::DeclarativeV3 ? info : nullptr;
+}
+
+bool usesDeclarativeSpatialHome() {
+  const CustomThemeInfo* info = declarativeHomeInfo();
+  return info && info->homeRecentBooks > 1;
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -626,10 +637,17 @@ void HomeActivity::loadAllBookStats() {
     cachedBookProgress[i] = RecentBookProgress::loadPercent(recentBooks[i]);
   }
   bookStatsCached = true;
-  LOG_DBG("HOME", "carousel: cached stats/progress for %d book(s) in %lums", count, millis() - start);
+  LOG_DBG("HOME", "cached Home stats/progress for %d book(s) in %lums", count, millis() - start);
 }
 
 void HomeActivity::loadRecentCovers(int coverHeight) {
+  const CustomThemeInfo* declarativeInfo = declarativeHomeInfo();
+  if (declarativeInfo && !declarativeInfo->homeShowCover) {
+    recentsLoading = false;
+    recentsLoaded = true;
+    return;
+  }
+
   // Thumbnail generation may need a 32 KB contiguous inflate buffer. The Home
   // cover snapshot is only a redraw cache, so release it before ZIP work.
   if (coverBuffer) {
@@ -901,7 +919,10 @@ void HomeActivity::onEnter() {
   globalStats = GlobalReadingStats::load();
   showAllDevicesStats = GlobalReadingStats::hasSyncedStats();
   allDevicesGlobalStats = showAllDevicesStats ? GlobalReadingStats::loadAggregated(globalStats) : globalStats;
-  if (isCarouselTheme) {
+  const CustomThemeInfo* declarativeInfo = declarativeHomeInfo();
+  if (isCarouselTheme ||
+      (declarativeInfo && (declarativeInfo->homeRecentBooks > 1 || declarativeInfo->homeShowProgress ||
+                           declarativeInfo->homeShowBookStats))) {
     loadAllBookStats();
   }
   updateHighlightedBookContext();
@@ -1551,6 +1572,7 @@ void HomeActivity::loop() {
 
   const bool isCarousel =
       UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+  const bool usesSpatialHome = isCarousel || usesDeclarativeSpatialHome();
   const int previousHighlightedBookIdx = getHighlightedBookIndex();
   const int visibleBookCount = getVisibleRecentBookCount();
 
@@ -1568,7 +1590,7 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (isCarousel) {
+  if (usesSpatialHome) {
     const int bookCount = visibleBookCount;
     const int menuItemCount =
         static_cast<int>(buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings).size());
@@ -1793,10 +1815,13 @@ void HomeActivity::render(RenderLock&&) {
   coverRectW = pageWidth;
   coverRectH = metrics.homeCoverTileHeight;
 
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&HomeActivity::storeCoverBuffer, this),
-                          hasAnyBookStats(currentBookStats) ? &currentBookStats : nullptr, currentBookProgressPercent);
+  const int themeBookSelection = declarativeHomeInfo() ? getHighlightedBookIndex() : selectorIndex;
+  GUI.drawRecentBookCover(
+      renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, recentBooks,
+      themeBookSelection, coverRendered, coverBufferStored, bufferRestored,
+      std::bind(&HomeActivity::storeCoverBuffer, this),
+      hasAnyBookStats(currentBookStats) ? &currentBookStats : nullptr, currentBookProgressPercent, &globalStats,
+      currentBookChapterTitle.c_str());
 
   auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
                                                 metrics.homeContinueReadingInMenu && !recentBooks.empty());
@@ -1813,7 +1838,8 @@ void HomeActivity::render(RenderLock&&) {
 
   const bool isCarouselTheme =
       UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
-  const auto labels = isCarouselTheme ? mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+  const bool usesSpatialHome = isCarouselTheme || usesDeclarativeSpatialHome();
+  const auto labels = usesSpatialHome ? mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
                                       : mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

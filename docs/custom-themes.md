@@ -79,6 +79,80 @@ The firmware opens one asset at a time and draws it into the existing display
 buffer. Invalid packages are omitted from the selector; if an active package
 is removed, the device returns to Lyra.
 
+## Structural Settings layouts (v3)
+
+Schema v3 keeps every v2 component and adds a bounded, declarative layout for
+the Settings screen. It can change the menu structure without replacing the
+firmware-owned actions or executing theme code:
+
+```json
+{
+  "schemaVersion": 3,
+  "engine": "declarative",
+  "screens": {
+    "settings": {
+      "layout": "grid",
+      "columns": 2,
+      "gap": 8,
+      "cardRadius": 8,
+      "cardHeight": 64,
+      "order": ["uiTheme", "sleepScreen"]
+    }
+  }
+}
+```
+
+`layout` accepts `list`, `cards`, or `grid`. Grid layouts support one to three
+columns and spatial button navigation. `order` accepts up to eight stable keys
+from `SettingInfo.key`; matching items move to the front and every other
+firmware setting remains visible afterward. Card and grid layouts omit section
+heading rows but keep all interactive items and submenus.
+
+The firmware retains only a fixed summary and 32-bit hashes of the requested
+keys. It never retains the JSON document during rendering. A Settings layout
+is limited to 48 resolved entries; larger or invalid screen definitions fall
+back to the normal list without disabling the rest of the theme.
+
+## Modular Home layouts (v3)
+
+The v3 `home` object can compose reading-focused modules instead of placing one
+fixed cover over a decorative background:
+
+```json
+{
+  "home": {
+    "layout": "shelf",
+    "recentBooks": 3,
+    "bookGap": 10,
+    "showCover": true,
+    "showTitle": true,
+    "showAuthor": false,
+    "showProgress": true,
+    "showBookStats": false,
+    "showGlobalStats": true
+  }
+}
+```
+
+Available compositions are:
+
+- `shelf`: displays up to three recent books simultaneously.
+- `spotlight`: displays one selected book using the normalized `cover`
+  geometry; other recent books remain navigable.
+- `dashboard`: displays the selected cover and book information side by side.
+
+When `recentBooks` is greater than one, Left and Right navigate books, Up and
+Down move between the book composition and the action menu, and Confirm opens
+the selected book. The optional book-statistics module displays reading time,
+progress, and pages turned. The global module displays total reading time,
+completed books, and sessions. These values come from firmware-owned reading
+data and cannot be supplied or modified by a theme.
+
+`background` remains supported for compatibility with existing v2 packages,
+but Theme Studio no longer exports decorative Home images. Disabling
+`showCover` also skips thumbnail generation, which avoids unnecessary SD and
+EPUB work for text-and-statistics-only designs.
+
 ## Importing a package
 
 Open the device's Wi-Fi portal and select **Themes**. The portal imports a
@@ -89,12 +163,13 @@ an installed package requires confirmation. The device validates the manifest,
 file layout, size, and BMP format again before publishing the package, so a
 manual copy to `/themes/<id>/` remains supported.
 
-The current importer accepts declarative v2 packages only. Font files and
+The current importer accepts declarative v2 and v3 packages. Font files and
 scripts are intentionally not accepted.
 
 ## Theme Studio
 
 The standalone [Theme Studio](../theme-studio/README.md) application creates
-v2 packages in a normal web browser. It is intentionally separate from the
-firmware and can be deployed to any static-file host. The device portal is
+v3 packages in a normal web browser, including Settings list, card, and grid
+layouts. It is intentionally separate from the firmware and can be deployed to
+any static-file host. The device portal is
 only responsible for importing and managing the resulting package.

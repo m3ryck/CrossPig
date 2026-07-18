@@ -48,6 +48,41 @@ bool safeAssetPath(const char* path) {
   return length > 7 && length < 64 && std::strcmp(path + length - 4, ".bmp") == 0;
 }
 
+bool safeSettingId(const char* id) {
+  if (!id || id[0] == '\0' || std::strlen(id) > 48) return false;
+  for (const char* p = id; *p; ++p) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (!(std::isalnum(c) || c == '_' || c == '-')) return false;
+  }
+  return true;
+}
+
+bool settingsLayoutForName(const char* name, CustomThemeInfo::SettingsLayout& out) {
+  if (!name || name[0] == '\0' || std::strcmp(name, "list") == 0) {
+    out = CustomThemeInfo::SettingsLayout::List;
+  } else if (std::strcmp(name, "cards") == 0) {
+    out = CustomThemeInfo::SettingsLayout::Cards;
+  } else if (std::strcmp(name, "grid") == 0) {
+    out = CustomThemeInfo::SettingsLayout::Grid;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool homeLayoutForName(const char* name, CustomThemeInfo::HomeLayout& out) {
+  if (!name || name[0] == '\0' || std::strcmp(name, "spotlight") == 0) {
+    out = CustomThemeInfo::HomeLayout::Spotlight;
+  } else if (std::strcmp(name, "shelf") == 0) {
+    out = CustomThemeInfo::HomeLayout::Shelf;
+  } else if (std::strcmp(name, "dashboard") == 0) {
+    out = CustomThemeInfo::HomeLayout::Dashboard;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 bool normalizedValue(const JsonVariantConst value, uint16_t fallback, uint16_t& out) {
   if (value.isNull()) {
     out = fallback;
@@ -118,7 +153,7 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
     return false;
   }
   const int schemaVersion = doc["schemaVersion"] | 0;
-  if (schemaVersion != 1 && schemaVersion != 2) {
+  if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3) {
     LOG_ERR("THEME", "Unsupported schema in %s", manifestPath);
     return false;
   }
@@ -133,9 +168,10 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
 
   std::strncpy(out.id, id, sizeof(out.id) - 1);
   std::strncpy(out.name, name, sizeof(out.name) - 1);
-  if (schemaVersion == 2) {
+  if (schemaVersion == 2 || schemaVersion == 3) {
     if (std::strcmp(doc["engine"] | "", "declarative") != 0) return false;
-    out.kind = CustomThemeInfo::Kind::DeclarativeV2;
+    out.kind = schemaVersion == 3 ? CustomThemeInfo::Kind::DeclarativeV3
+                                  : CustomThemeInfo::Kind::DeclarativeV2;
     out.baseTheme = CrossPointSettings::LYRA;  // neutral metrics for legacy activities
     const JsonObjectConst home = doc["home"].as<JsonObjectConst>();
     const JsonObjectConst cover = home["cover"].as<JsonObjectConst>();
@@ -145,16 +181,33 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
         !normalizedValue(cover["height"], 1000, out.coverHeight) ||
         !boundedValue(home["topPadding"], out.homeTopPadding, 0, 200, out.homeTopPadding) ||
         !boundedValue(home["coverAreaHeight"], out.homeCoverAreaHeight, 100, 600, out.homeCoverAreaHeight) ||
-        !boundedValue(home["menuTopOffset"], out.homeMenuTopOffset, 0, 100, out.homeMenuTopOffset)) return false;
+        !boundedValue(home["menuTopOffset"], out.homeMenuTopOffset, 0, 100, out.homeMenuTopOffset))
+      return false;
     const int radius = cover["cornerRadius"] | 0;
     const int columns = menu["columns"] | 1;
     const int rowHeight = menu["rowHeight"] | 0;
     const int gap = menu["gap"] | 8;
-    if (radius < 0 || radius > 100 || columns < 1 || columns > 4 || rowHeight < 0 || rowHeight > 300 || gap < 0 || gap > 100) return false;
+    if (radius < 0 || radius > 100 || columns < 1 || columns > 4 || rowHeight < 0 || rowHeight > 300 || gap < 0 ||
+        gap > 100) {
+      return false;
+    }
     out.coverCornerRadius = static_cast<uint16_t>(radius);
     out.menuColumns = static_cast<uint8_t>(columns);
     out.menuRowHeight = static_cast<uint16_t>(rowHeight);
     out.menuGap = static_cast<uint16_t>(gap);
+    if (schemaVersion == 3) {
+      if (out.homeCoverAreaHeight < 180 || !homeLayoutForName(home["layout"] | "spotlight", out.homeLayout) ||
+          !boundedByte(home["recentBooks"], out.homeRecentBooks, 1, 3, out.homeRecentBooks) ||
+          !boundedByte(home["bookGap"], out.homeBookGap, 0, 40, out.homeBookGap)) {
+        return false;
+      }
+      out.homeShowCover = home["showCover"] | out.homeShowCover;
+      out.homeShowTitle = home["showTitle"] | out.homeShowTitle;
+      out.homeShowAuthor = home["showAuthor"] | out.homeShowAuthor;
+      out.homeShowProgress = home["showProgress"] | out.homeShowProgress;
+      out.homeShowBookStats = home["showBookStats"] | out.homeShowBookStats;
+      out.homeShowGlobalStats = home["showGlobalStats"] | out.homeShowGlobalStats;
+    }
     const JsonObjectConst header = doc["header"].as<JsonObjectConst>();
     const JsonObjectConst list = doc["list"].as<JsonObjectConst>();
     const JsonObjectConst popup = doc["popup"].as<JsonObjectConst>();
@@ -194,11 +247,52 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
     out.popupTextInverted = popup["inverted"] | out.popupTextInverted;
     out.keyboardFillUnselected = input["fillUnselected"] | out.keyboardFillUnselected;
     out.keyboardOutlineUnselected = input["outlineUnselected"] | out.keyboardOutlineUnselected;
+    if (schemaVersion == 3) {
+      const JsonObjectConst settings = doc["screens"]["settings"].as<JsonObjectConst>();
+      if (!settings.isNull()) {
+        bool validSettingsScreen =
+            settingsLayoutForName(settings["layout"] | "list", out.settingsLayout) &&
+            boundedByte(settings["columns"], out.settingsColumns, 1, 3, out.settingsColumns) &&
+            boundedByte(settings["gap"], out.settingsGap, 0, 40, out.settingsGap) &&
+            boundedByte(settings["cardRadius"], out.settingsCardRadius, 0, 40, out.settingsCardRadius) &&
+            boundedValue(settings["cardHeight"], out.settingsCardHeight, 44, 140, out.settingsCardHeight);
+        if (validSettingsScreen) {
+          if (out.settingsLayout == CustomThemeInfo::SettingsLayout::Cards) out.settingsColumns = 1;
+          const JsonArrayConst order = settings["order"].as<JsonArrayConst>();
+          for (const JsonVariantConst item : order) {
+            if (out.settingsOrderCount >= CustomThemeInfo::kMaxSettingsOrderItems) {
+              validSettingsScreen = false;
+              break;
+            }
+            const char* stableId = item.as<const char*>();
+            if (!safeSettingId(stableId)) {
+              validSettingsScreen = false;
+              break;
+            }
+            const uint32_t hash = CustomThemeInfo::stableIdHash(stableId);
+            for (uint8_t i = 0; i < out.settingsOrderCount; ++i) {
+              if (out.settingsOrderHashes[i] == hash) validSettingsScreen = false;
+            }
+            if (!validSettingsScreen) break;
+            out.settingsOrderHashes[out.settingsOrderCount++] = hash;
+          }
+        }
+        if (!validSettingsScreen) {
+          LOG_ERR("THEME", "Invalid Settings screen in %s; using list fallback", manifestPath);
+          out.settingsLayout = CustomThemeInfo::SettingsLayout::List;
+          out.settingsColumns = 1;
+          out.settingsGap = 8;
+          out.settingsCardRadius = 6;
+          out.settingsCardHeight = 64;
+          out.settingsOrderCount = 0;
+        }
+      }
+    }
     const char* background = home["background"] | "";
     if (background[0] != '\0') {
       if (!safeAssetPath(background)) return false;
-      const int assetPathWritten = std::snprintf(out.homeBackground, sizeof(out.homeBackground), "%s/%s/%s", kThemesDir,
-                                                 directoryName, background);
+      const int assetPathWritten = std::snprintf(out.homeBackground, sizeof(out.homeBackground), "%s/%s/%s",
+                                                 kThemesDir, directoryName, background);
       if (assetPathWritten < 0 || static_cast<size_t>(assetPathWritten) >= sizeof(out.homeBackground) ||
           !Storage.exists(out.homeBackground)) return false;
     }

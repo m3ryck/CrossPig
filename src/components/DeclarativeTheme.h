@@ -17,6 +17,7 @@ class DeclarativeTheme final : public BaseTheme {
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int count, int selected,
                       const std::function<const char*(int)>& label,
                       const std::function<UIIcon(int)>& icon) const override;
+  const CustomThemeInfo* declarativeInfo() const override { return &info_; }
 
  private:
   Rect normalized(Rect parent, uint16_t x, uint16_t y, uint16_t width, uint16_t height) const;

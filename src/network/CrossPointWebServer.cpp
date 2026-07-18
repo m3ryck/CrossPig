@@ -1991,7 +1991,7 @@ void CrossPointWebServer::handleThemeList() {
   JsonDocument doc;
   JsonArray themes = doc["themes"].to<JsonArray>();
   for (const auto& theme : CUSTOM_THEMES.getThemes()) {
-    if (theme.kind != CustomThemeInfo::Kind::DeclarativeV2) continue;
+    if (!theme.isDeclarative()) continue;
     JsonObject item = themes.add<JsonObject>();
     item["id"] = theme.id; item["name"] = theme.name;
     item["active"] = SETTINGS.uiTheme == CrossPointSettings::CUSTOM_THEME &&
@@ -2031,7 +2031,7 @@ void CrossPointWebServer::handleThemeActivate() {
   char id[CustomThemeInfo::kIdCapacity]; bool ignored = false;
   CUSTOM_THEMES.discover();
   const CustomThemeInfo* theme = readThemeRequest(server.get(), id, sizeof(id), ignored) ? CUSTOM_THEMES.find(id) : nullptr;
-  if (!theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV2) {
+  if (!theme || !theme->isDeclarative()) {
     server->send(400, "application/json", "{\"error\":\"Unknown theme\"}"); return;
   }
   SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
@@ -2043,7 +2043,7 @@ void CrossPointWebServer::handleThemeDelete() {
   char id[CustomThemeInfo::kIdCapacity], error[96] = "Invalid request"; bool ignored = false;
   CUSTOM_THEMES.discover();
   const CustomThemeInfo* theme = readThemeRequest(server.get(), id, sizeof(id), ignored) ? CUSTOM_THEMES.find(id) : nullptr;
-  if (!theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV2 ||
+  if (!theme || !theme->isDeclarative() ||
       !ThemeInstaller::remove(id, error, sizeof(error))) {
     server->send(400, "application/json", String("{\"error\":\"") + error + "\"}"); return;
   }

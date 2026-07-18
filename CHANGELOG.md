@@ -5,6 +5,8 @@
 - Custom UI Theme editor: combine Home, Header, List, Menu, Popup, Input, Hints, and Status Bar renderers from built-in or SD-card `/themes/<id>/theme.json` packages.
 - Wi-Fi portal theme management: import, activate, replace, and remove declarative `.cptheme` packages with device-side validation and staged publication with rollback.
 - Declarative themes can customize Home geometry, headers, lists, menus, popups, keyboard/input, button hints, and reader status metrics, with matching previews in Theme Studio.
+- Declarative theme schema v3 can restructure Settings as a list, cards, or a spatially navigated grid and prioritize settings by stable IDs, with safe per-screen fallback.
+- Declarative Home themes can show up to three navigable recent books in Shelf, Spotlight, or Dashboard compositions, with optional title, author, progress, per-book statistics, and global statistics modules.
 
 - Dashboard UI theme for the Home screen, showing the current book cover and reading stats.
 - Nearby Position Sync for sending or applying the current EPUB position between two CrossInk devices over ESP-NOW.
@@ -15,6 +17,8 @@
 ### Changed
 
 - Theme Studio now uses a responsive React/shadcn interface with grouped component controls, synchronized sliders and numeric inputs, accessible switches, and tabbed live previews.
+- Theme Studio now exports v3 packages and previews Settings list, card, and grid layouts with bounded stable-ID ordering.
+- Theme Studio now provides a modular Home composer and no longer exports decorative background images that would be obscured by book content.
 - Large EPUBs, SD-card font-heavy books, and cover thumbnails now open, index, and generate more reliably under low-memory conditions.
 - Home and sleep screens now load more cover and thumbnail data only when needed, reducing reader startup work and reusing cached cover data where possible.
 - Built-in reader font choices have been reduced to Lexend Deca and Bitter, reducing firmware size while keeping fallback glyph coverage.
@@ -25,6 +29,7 @@
 
 ### Fixed
 
+- Declarative Settings grids no longer stall on entry from repeated temporary text allocations while rendering cards.
 - EPUB render-mode and Safe Mode toast messages now clear reliably, even when the reader is low on memory.
 - EPUB Reading Stats no longer drops unsaved page-turn counts after viewing the stats screen mid-session.
 - KOSync is more reliable with many SD-card fonts installed, reducing low-memory failures during secure sync requests and uploads.

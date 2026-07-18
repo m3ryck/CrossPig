@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -66,7 +67,7 @@ void UITheme::reload() {
       customTheme = CUSTOM_THEMES.find(SETTINGS.customThemeId);
     }
     if (customTheme) {
-      if (customTheme->kind == CustomThemeInfo::Kind::DeclarativeV2) {
+      if (customTheme->isDeclarative()) {
         auto declarative = makeUniqueNoThrow<DeclarativeTheme>(*customTheme);
         if (!declarative) {
           LOG_ERR("UI", "OOM creating declarative theme %s", customTheme->id);
@@ -83,7 +84,10 @@ void UITheme::reload() {
         declarativeMetrics.listRowHeight = customTheme->listRowHeight;
         declarativeMetrics.listWithSubtitleRowHeight = customTheme->listSubtitleRowHeight;
         declarativeMetrics.homeTopPadding = customTheme->homeTopPadding;
+        declarativeMetrics.homeCoverHeight =
+            std::max(1, customTheme->homeCoverAreaHeight * customTheme->coverHeight / 1000);
         declarativeMetrics.homeCoverTileHeight = customTheme->homeCoverAreaHeight;
+        declarativeMetrics.homeRecentBooksCount = customTheme->homeRecentBooks;
         declarativeMetrics.homeMenuTopOffset = customTheme->homeMenuTopOffset;
         declarativeMetrics.menuRowHeight = customTheme->menuRowHeight > 0 ? customTheme->menuRowHeight : 56;
         declarativeMetrics.menuSpacing = customTheme->menuGap;

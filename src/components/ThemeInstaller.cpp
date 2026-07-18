@@ -164,7 +164,9 @@ bool ThemeInstaller::validateStaging(const char* id, char* error, size_t errorSi
   const size_t manifestSize = file.fileSize();
   JsonDocument doc;
   const auto parse = deserializeJson(doc, file); file.close();
-  if (parse || (doc["schemaVersion"] | 0) != 2 || std::strcmp(doc["engine"] | "", "declarative") != 0 ||
+  const int schemaVersion = doc["schemaVersion"] | 0;
+  if (parse || (schemaVersion != 2 && schemaVersion != 3) ||
+      std::strcmp(doc["engine"] | "", "declarative") != 0 ||
       std::strcmp(doc["id"] | "", id) != 0) { setError(error, errorSize, "Invalid declarative manifest"); return false; }
   size_t total = manifestSize;
   if (!validateAssets(root, total, error, errorSize)) return false;

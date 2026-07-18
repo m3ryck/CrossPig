@@ -1,12 +1,6 @@
 import { useMemo, useState } from "react";
 import JSZip from "jszip";
-import {
-  Download,
-  ImagePlus,
-  MonitorSmartphone,
-  RotateCcw,
-  Sparkles,
-} from "lucide-react";
+import { Download, MonitorSmartphone, RotateCcw, Sparkles } from "lucide-react";
 import {
   Accordion,
   AccordionContent,
@@ -32,8 +26,17 @@ const defaults = {
   name: "My Theme",
   id: "my-theme",
   homeTopPadding: 56,
-  homeCoverAreaHeight: 242,
-  homeMenuTopOffset: 16,
+  homeCoverAreaHeight: 340,
+  homeMenuTopOffset: 12,
+  homeLayout: "shelf",
+  homeRecentBooks: 3,
+  homeBookGap: 10,
+  homeShowCover: true,
+  homeShowTitle: true,
+  homeShowAuthor: false,
+  homeShowProgress: true,
+  homeShowBookStats: false,
+  homeShowGlobalStats: true,
   coverX: 200,
   coverY: 20,
   coverWidth: 600,
@@ -73,23 +76,15 @@ const defaults = {
   statusMarginX: 5,
   statusMarginY: 19,
   progressHeight: 16,
+  settingsLayout: "grid",
+  settingsColumns: 2,
+  settingsGap: 8,
+  settingsCardRadius: 8,
+  settingsCardHeight: 64,
+  settingsOrder: "uiTheme, sleepScreen",
 };
 
 const groups = [
-  {
-    value: "home",
-    title: "Home and cover",
-    fields: [
-      ["homeTopPadding", "Top padding", 0, 200],
-      ["homeCoverAreaHeight", "Cover area", 100, 600],
-      ["homeMenuTopOffset", "Menu offset", 0, 100],
-      ["coverX", "Cover X", 0, 1000],
-      ["coverY", "Cover Y", 0, 1000],
-      ["coverWidth", "Cover width", 1, 1000],
-      ["coverHeight", "Cover height", 1, 1000],
-      ["cornerRadius", "Cover radius", 0, 100],
-    ],
-  },
   {
     value: "menu",
     title: "Action menu",
@@ -210,85 +205,54 @@ function ToggleField({ field, label, checked, onChange }) {
   );
 }
 
-function monochromeBmp(canvas) {
-  const width = canvas.width,
-    height = canvas.height,
-    rowBytes = Math.ceil(width / 32) * 4,
-    offset = 62;
-  const bytes = new Uint8Array(offset + rowBytes * height),
-    view = new DataView(bytes.buffer);
-  bytes.set([0x42, 0x4d]);
-  view.setUint32(2, bytes.length, true);
-  view.setUint32(10, offset, true);
-  view.setUint32(14, 40, true);
-  view.setInt32(18, width, true);
-  view.setInt32(22, height, true);
-  view.setUint16(26, 1, true);
-  view.setUint16(28, 1, true);
-  view.setUint32(34, rowBytes * height, true);
-  view.setUint32(46, 2, true);
-  bytes.set([0, 0, 0, 0, 255, 255, 255, 0], 54);
-  const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
-  for (let y = 0; y < height; y += 1)
-    for (let x = 0; x < width; x += 1) {
-      const source = ((height - 1 - y) * width + x) * 4,
-        light =
-          pixels[source] * 0.299 +
-          pixels[source + 1] * 0.587 +
-          pixels[source + 2] * 0.114;
-      if (light >= 128)
-        bytes[offset + y * rowBytes + (x >> 3)] |= 0x80 >> (x & 7);
-    }
-  return bytes;
-}
-
-async function convertBackground(file) {
-  const url = URL.createObjectURL(file);
-  try {
-    const image = new Image();
-    image.src = url;
-    await new Promise((resolve, reject) => {
-      image.onload = resolve;
-      image.onerror = reject;
-    });
-    const canvas = document.createElement("canvas");
-    canvas.width = 800;
-    canvas.height = 480;
-    const context = canvas.getContext("2d");
-    context.fillStyle = "white";
-    context.fillRect(0, 0, 800, 480);
-    const scale = Math.min(800 / image.width, 480 / image.height),
-      width = image.width * scale,
-      height = image.height * scale;
-    context.drawImage(
-      image,
-      (800 - width) / 2,
-      (480 - height) / 2,
-      width,
-      height,
-    );
-    return {
-      bmp: monochromeBmp(canvas),
-      preview: canvas.toDataURL("image/png"),
-    };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-function HomePreview({ theme, background }) {
-  const scale = 0.5,
-    coverAreaTop = theme.homeTopPadding * scale;
-  const coverStyle = {
-    left: (theme.coverX / 1000) * 240,
-    top:
-      (theme.homeTopPadding +
-        (theme.coverY / 1000) * theme.homeCoverAreaHeight) *
-      scale,
-    width: (theme.coverWidth / 1000) * 240,
-    height: (theme.coverHeight / 1000) * theme.homeCoverAreaHeight * scale,
-    borderRadius: theme.cornerRadius * scale,
-  };
+function HomePreview({ theme }) {
+  const scale = 0.5;
+  const books = [
+    ["The Left Hand of Darkness", "Ursula K. Le Guin"],
+    ["Kindred", "Octavia E. Butler"],
+    ["The Dispossessed", "Ursula K. Le Guin"],
+  ].slice(0, theme.homeRecentBooks);
+  const bookCards = books.map(([title, author], index) => (
+    <div
+      className={`home-book-card ${index === 0 ? "selected" : ""}`}
+      style={{ borderRadius: theme.cornerRadius * scale }}
+      key={title}
+    >
+      {theme.homeShowCover && (
+        <div className={`preview-cover cover-${index + 1}`} />
+      )}
+      <div className="home-book-copy">
+        {theme.homeShowTitle && <b>{title}</b>}
+        {theme.homeShowAuthor && <small>{author}</small>}
+        {theme.homeShowProgress && index === 0 && (
+          <i className="home-progress">
+            <span />
+          </i>
+        )}
+      </div>
+    </div>
+  ));
+  const statModule = (type) => (
+    <div className="home-stats" key={type}>
+      {(type === "book"
+        ? [
+            ["4h 20m", "Reading time"],
+            ["42%", "Progress"],
+            ["186", "Pages"],
+          ]
+        : [
+            ["28h", "All books"],
+            ["7", "Completed"],
+            ["21", "Sessions"],
+          ]
+      ).map(([value, label]) => (
+        <span key={label}>
+          <b>{value}</b>
+          <small>{label}</small>
+        </span>
+      ))}
+    </div>
+  );
   return (
     <div className="device">
       <div
@@ -303,15 +267,23 @@ function HomePreview({ theme, background }) {
         <span>10:42&nbsp; 82%</span>
       </div>
       <div
-        className="home-bg"
+        className={`home-composition home-${theme.homeLayout}`}
         style={{
-          top: coverAreaTop,
+          top: theme.homeTopPadding * scale,
           height: theme.homeCoverAreaHeight * scale,
-          backgroundImage: background ? `url(${background})` : undefined,
+          gap: theme.homeBookGap * scale,
         }}
-      />
-      <div className="book-cover" style={coverStyle}>
-        Recent book
+      >
+        <div className="home-books" style={{ gap: theme.homeBookGap * scale }}>
+          {theme.homeLayout === "shelf" ? bookCards : bookCards[0]}
+        </div>
+        {theme.homeLayout !== "shelf" && theme.homeRecentBooks > 1 && (
+          <div className="home-book-nav">
+            ‹&nbsp; 1 / {theme.homeRecentBooks} &nbsp;›
+          </div>
+        )}
+        {theme.homeShowBookStats && statModule("book")}
+        {theme.homeShowGlobalStats && statModule("global")}
       </div>
       <div
         className="device-menu"
@@ -343,13 +315,32 @@ function HomePreview({ theme, background }) {
   );
 }
 
-function Preview({ theme, background }) {
+function Preview({ theme }) {
   const keyStyle = {
     width: theme.keyWidth,
     height: theme.keyHeight,
     borderRadius: theme.keyRadius,
     margin: theme.keySpacing / 2,
   };
+  const preferredSettings = theme.settingsOrder
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const settingsItems = [
+    ["uiTheme", "UI theme", "My Theme"],
+    ["sleepScreen", "Sleep screen", "Cover"],
+    ["refreshFrequency", "Screen refresh", "7"],
+    ["hideClock", "Show clock", "On"],
+    ["language", "Language", "English"],
+    ["device", "Device", ">"],
+  ].sort((first, second) => {
+    const firstRank = preferredSettings.indexOf(first[0]);
+    const secondRank = preferredSettings.indexOf(second[0]);
+    if (firstRank < 0 && secondRank < 0) return 0;
+    if (firstRank < 0) return 1;
+    if (secondRank < 0) return -1;
+    return firstRank - secondRank;
+  });
   return (
     <Tabs defaultValue="home">
       <TabsList className="preview-tabs">
@@ -359,7 +350,7 @@ function Preview({ theme, background }) {
         <TabsTrigger value="reader">Reader</TabsTrigger>
       </TabsList>
       <TabsContent value="home">
-        <HomePreview theme={theme} background={background} />
+        <HomePreview theme={theme} />
       </TabsContent>
       <TabsContent value="navigation">
         <div className="component-screen">
@@ -382,16 +373,35 @@ function Preview({ theme, background }) {
             <span>System</span>
           </div>
           <div
-            className="sample-list"
-            style={{ paddingInline: theme.sidePadding }}
+            className={`settings-preview settings-${theme.settingsLayout}`}
+            style={{
+              paddingInline: theme.sidePadding,
+              gap: theme.settingsLayout === "list" ? 0 : theme.settingsGap,
+              gridTemplateColumns:
+                theme.settingsLayout === "grid"
+                  ? `repeat(${theme.settingsColumns}, 1fr)`
+                  : "1fr",
+            }}
           >
-            <span style={{ height: theme.listRowHeight }}>Theme</span>
-            <span className="selected" style={{ height: theme.listRowHeight }}>
-              Custom theme
-            </span>
-            <span style={{ height: theme.subtitleRowHeight }}>
-              Font<small>Lexend Deca</small>
-            </span>
+            {settingsItems.map(([, label, value], index) => (
+              <span
+                key={label}
+                className={index === 1 ? "selected" : ""}
+                style={{
+                  minHeight:
+                    theme.settingsLayout === "list"
+                      ? theme.listRowHeight
+                      : theme.settingsCardHeight,
+                  borderRadius:
+                    theme.settingsLayout === "list"
+                      ? 0
+                      : theme.settingsCardRadius,
+                }}
+              >
+                <b>{label}</b>
+                <small>{value}</small>
+              </span>
+            ))}
           </div>
         </div>
       </TabsContent>
@@ -458,33 +468,33 @@ function Preview({ theme, background }) {
 
 export default function App() {
   const [theme, setTheme] = useState(defaults),
-    [asset, setAsset] = useState(null),
     [message, setMessage] = useState("");
   const update = (field, value) =>
     setTheme((current) => ({ ...current, [field]: value }));
-  const valid = useMemo(
-    () => /^[a-z0-9-]{1,32}$/.test(theme.id) && theme.name.trim().length > 0,
-    [theme.id, theme.name],
+  const settingsOrder = useMemo(
+    () =>
+      theme.settingsOrder
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    [theme.settingsOrder],
   );
-  const selectImage = async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    try {
-      setMessage("Converting background…");
-      setAsset(await convertBackground(file));
-      setMessage("Background ready — converted locally to a 1-bit BMP.");
-    } catch {
-      setAsset(null);
-      setMessage("Could not read that image.");
-    }
-  };
+  const valid = useMemo(
+    () =>
+      /^[a-z0-9-]{1,32}$/.test(theme.id) &&
+      theme.name.trim().length > 0 &&
+      settingsOrder.length <= 8 &&
+      settingsOrder.every((item) => /^[A-Za-z0-9_-]{1,48}$/.test(item)) &&
+      new Set(settingsOrder).size === settingsOrder.length,
+    [settingsOrder, theme.id, theme.name],
+  );
   const exportTheme = async () => {
     if (!valid) {
       setMessage("Add a name and a valid lowercase identifier.");
       return;
     }
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       engine: "declarative",
       id: theme.id,
       name: theme.name.trim(),
@@ -492,6 +502,15 @@ export default function App() {
         topPadding: theme.homeTopPadding,
         coverAreaHeight: theme.homeCoverAreaHeight,
         menuTopOffset: theme.homeMenuTopOffset,
+        layout: theme.homeLayout,
+        recentBooks: theme.homeRecentBooks,
+        bookGap: theme.homeBookGap,
+        showCover: theme.homeShowCover,
+        showTitle: theme.homeShowTitle,
+        showAuthor: theme.homeShowAuthor,
+        showProgress: theme.homeShowProgress,
+        showBookStats: theme.homeShowBookStats,
+        showGlobalStats: theme.homeShowGlobalStats,
         cover: {
           x: theme.coverX,
           y: theme.coverY,
@@ -545,12 +564,18 @@ export default function App() {
         marginY: theme.statusMarginY,
         progressHeight: theme.progressHeight,
       },
+      screens: {
+        settings: {
+          layout: theme.settingsLayout,
+          columns: theme.settingsLayout === "cards" ? 1 : theme.settingsColumns,
+          gap: theme.settingsGap,
+          cardRadius: theme.settingsCardRadius,
+          cardHeight: theme.settingsCardHeight,
+          order: settingsOrder,
+        },
+      },
     };
     const zip = new JSZip();
-    if (asset) {
-      manifest.home.background = "assets/background.bmp";
-      zip.file("assets/background.bmp", asset.bmp);
-    }
     zip.file("theme.json", JSON.stringify(manifest, null, 2));
     const blob = await zip.generateAsync({
         type: "blob",
@@ -584,7 +609,6 @@ export default function App() {
             variant="outline"
             onClick={() => {
               setTheme(defaults);
-              setAsset(null);
               setMessage("Defaults restored.");
             }}
           >
@@ -630,19 +654,214 @@ export default function App() {
                 />
               </div>
             </div>
-            <label className="upload">
-              <ImagePlus size={20} />
-              <span>
-                <b>{asset ? "Change background" : "Add a background image"}</b>
-                <small>Converted locally to 800×480 monochrome BMP</small>
-              </span>
-              <Input type="file" accept="image/*" onChange={selectImage} />
-            </label>
             <Accordion
               type="multiple"
-              defaultValue={["home", "menu"]}
+              defaultValue={["settings", "home", "menu"]}
               className="controls"
             >
+              <AccordionItem value="home">
+                <AccordionTrigger>Home composition</AccordionTrigger>
+                <AccordionContent>
+                  <div
+                    className="layout-picker"
+                    role="group"
+                    aria-label="Home layout"
+                  >
+                    {["shelf", "spotlight", "dashboard"].map((layout) => (
+                      <Button
+                        key={layout}
+                        type="button"
+                        size="sm"
+                        variant={
+                          theme.homeLayout === layout ? "default" : "outline"
+                        }
+                        onClick={() => update("homeLayout", layout)}
+                      >
+                        {layout[0].toUpperCase() + layout.slice(1)}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="range-grid">
+                    <RangeField
+                      field="homeRecentBooks"
+                      label="Recent books"
+                      min={1}
+                      max={3}
+                      value={theme.homeRecentBooks}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="homeCoverAreaHeight"
+                      label="Composition height"
+                      min={180}
+                      max={600}
+                      value={theme.homeCoverAreaHeight}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="homeBookGap"
+                      label="Module gap"
+                      min={0}
+                      max={40}
+                      value={theme.homeBookGap}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="homeMenuTopOffset"
+                      label="Menu offset"
+                      min={0}
+                      max={100}
+                      value={theme.homeMenuTopOffset}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="coverHeight"
+                      label="Cover scale"
+                      min={300}
+                      max={1000}
+                      value={theme.coverHeight}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="cornerRadius"
+                      label="Corner radius"
+                      min={0}
+                      max={40}
+                      value={theme.cornerRadius}
+                      onChange={update}
+                    />
+                  </div>
+                  <div className="module-toggles">
+                    {[
+                      ["homeShowCover", "Book covers"],
+                      ["homeShowTitle", "Book titles"],
+                      ["homeShowAuthor", "Authors"],
+                      ["homeShowProgress", "Selected book progress"],
+                      ["homeShowBookStats", "Selected book statistics"],
+                      ["homeShowGlobalStats", "Global reading statistics"],
+                    ].map(([field, label]) => (
+                      <ToggleField
+                        key={field}
+                        field={field}
+                        label={label}
+                        checked={theme[field]}
+                        onChange={update}
+                      />
+                    ))}
+                  </div>
+                  {theme.homeLayout === "spotlight" && (
+                    <details className="advanced-home">
+                      <summary>Advanced spotlight geometry</summary>
+                      <div className="range-grid">
+                        <RangeField
+                          field="coverX"
+                          label="Cover X"
+                          min={0}
+                          max={1000}
+                          value={theme.coverX}
+                          onChange={update}
+                        />
+                        <RangeField
+                          field="coverY"
+                          label="Cover Y"
+                          min={0}
+                          max={1000}
+                          value={theme.coverY}
+                          onChange={update}
+                        />
+                        <RangeField
+                          field="coverWidth"
+                          label="Cover width"
+                          min={1}
+                          max={1000}
+                          value={theme.coverWidth}
+                          onChange={update}
+                        />
+                      </div>
+                    </details>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="settings">
+                <AccordionTrigger>Settings screen structure</AccordionTrigger>
+                <AccordionContent>
+                  <div
+                    className="layout-picker"
+                    role="group"
+                    aria-label="Settings layout"
+                  >
+                    {["list", "cards", "grid"].map((layout) => (
+                      <Button
+                        key={layout}
+                        type="button"
+                        size="sm"
+                        variant={
+                          theme.settingsLayout === layout
+                            ? "default"
+                            : "outline"
+                        }
+                        onClick={() => update("settingsLayout", layout)}
+                      >
+                        {layout[0].toUpperCase() + layout.slice(1)}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="range-grid">
+                    {theme.settingsLayout === "grid" && (
+                      <RangeField
+                        field="settingsColumns"
+                        label="Columns"
+                        min={1}
+                        max={3}
+                        value={theme.settingsColumns}
+                        onChange={update}
+                      />
+                    )}
+                    <RangeField
+                      field="settingsGap"
+                      label="Gap"
+                      min={0}
+                      max={40}
+                      value={theme.settingsGap}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="settingsCardHeight"
+                      label="Card height"
+                      min={44}
+                      max={140}
+                      value={theme.settingsCardHeight}
+                      onChange={update}
+                    />
+                    <RangeField
+                      field="settingsCardRadius"
+                      label="Card radius"
+                      min={0}
+                      max={40}
+                      value={theme.settingsCardRadius}
+                      onChange={update}
+                    />
+                  </div>
+                  <div className="order-field">
+                    <Label htmlFor="settings-order">
+                      Preferred setting order
+                    </Label>
+                    <textarea
+                      id="settings-order"
+                      value={theme.settingsOrder}
+                      aria-invalid={!valid}
+                      onChange={(event) =>
+                        update("settingsOrder", event.target.value)
+                      }
+                      placeholder="uiTheme, sleepScreen"
+                    />
+                    <small>
+                      Up to 8 stable setting keys, separated by commas. Other
+                      settings remain visible after them.
+                    </small>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
               {groups.map((group) => (
                 <AccordionItem key={group.value} value={group.value}>
                   <AccordionTrigger>{group.title}</AccordionTrigger>
@@ -691,10 +910,10 @@ export default function App() {
                 480×800 device geometry and component states.
               </CardDescription>
             </div>
-            <Badge>v2 declarative</Badge>
+            <Badge>v3 declarative</Badge>
           </CardHeader>
           <CardContent>
-            <Preview theme={theme} background={asset?.preview} />
+            <Preview theme={theme} />
           </CardContent>
         </Card>
       </div>

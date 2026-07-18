@@ -1,6 +1,6 @@
 # CrossInk Theme Studio
 
-A standalone browser application for creating declarative CrossInk v2
+A standalone browser application for creating declarative CrossInk v3
 `.cptheme` packages. It runs entirely in the browser: no theme image or
 metadata is uploaded to a server.
 
@@ -22,6 +22,7 @@ can be deployed to GitHub Pages, Netlify, Vercel, or any static-file host.
 
 ## Output
 
-The Studio produces a ZIP archive with a `.cptheme` extension. It contains a
-v2 `theme.json` and, if selected, `assets/background.bmp` as an 800×480 1-bit
-BMP. Import that file using the **Themes** page in the CrossInk Wi-Fi portal.
+The Studio produces a ZIP archive with a `.cptheme` extension containing a v3
+`theme.json`. Import that file using the **Themes** page in the CrossInk Wi-Fi
+portal. Legacy themes may still contain a monochrome Home background, but the
+Studio focuses on useful reading modules rather than images hidden by covers.

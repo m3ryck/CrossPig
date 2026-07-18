@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <Utf8.h>
 
 #include <algorithm>
 #include <cctype>
@@ -50,6 +51,107 @@ constexpr size_t controlsPowerMinCount = 2;
 constexpr size_t controlsPowerMaxCount = 3;
 constexpr size_t controlsFrontButtonCount = 6;
 constexpr size_t controlsSideButtonCount = 3;
+constexpr size_t settingsTitleCapacity = 96;
+constexpr size_t settingsValueCapacity = 64;
+
+void fitSettingsText(const GfxRenderer& renderer, const int fontId, char* text, const size_t capacity,
+                     const int maxWidth, const EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  if (!text || capacity == 0 || maxWidth <= 0) {
+    if (text && capacity > 0) text[0] = '\0';
+    return;
+  }
+  const int fullWidth = renderer.getTextWidth(fontId, text, style);
+  if (fullWidth <= maxWidth) return;
+
+  constexpr char ellipsis[] = "...";
+  const int availableWidth = maxWidth - renderer.getTextWidth(fontId, ellipsis, style);
+  if (availableWidth <= 0) {
+    text[0] = '\0';
+    return;
+  }
+
+  size_t length = std::strlen(text);
+  const size_t estimatedLength =
+      std::max<size_t>(1, static_cast<size_t>(length * availableWidth / std::max(1, fullWidth)));
+  length = static_cast<size_t>(utf8SafeTruncateBuffer(text, static_cast<int>(estimatedLength)));
+  text[length] = '\0';
+  while (length > 0 && renderer.getTextWidth(fontId, text, style) > availableWidth) {
+    length = static_cast<size_t>(utf8SafeTruncateBuffer(text, static_cast<int>(length - 1)));
+    text[length] = '\0';
+  }
+  if (length + sizeof(ellipsis) <= capacity) std::memcpy(text + length, ellipsis, sizeof(ellipsis));
+}
+
+void settingValueTextInto(const SettingInfo& setting, char* out, const size_t outSize) {
+  if (!out || outSize == 0) return;
+  out[0] = '\0';
+  if (settingShowsNavigationCaret(setting)) {
+    std::snprintf(out, outSize, ">");
+    return;
+  }
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+    std::snprintf(out, outSize, "%s", SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
+    return;
+  }
+  if (setting.type == SettingType::ENUM && (setting.valuePtr != nullptr || setting.valueGetter)) {
+    const uint8_t rawValue = setting.valuePtr != nullptr ? SETTINGS.*(setting.valuePtr) : setting.valueGetter();
+    const uint8_t displayIndex =
+        setting.valuePtr != nullptr ? settingEnumDisplayIndexForRawValue(setting, rawValue) : rawValue;
+    if (!setting.enumStringValues.empty()) {
+      if (displayIndex < setting.enumStringValues.size()) {
+        std::snprintf(out, outSize, "%s", setting.enumStringValues[displayIndex].c_str());
+      }
+    } else if (displayIndex < setting.enumValues.size()) {
+      std::snprintf(out, outSize, "%s", I18N.get(setting.enumValues[displayIndex]));
+    }
+    return;
+  }
+  if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
+    const uint8_t value = SETTINGS.*(setting.valuePtr);
+    if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
+      if (SETTINGS.sleepTimeoutMinutes >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {
+        std::snprintf(out, outSize, "%s", tr(STR_SLEEP_NEVER));
+      } else {
+        std::snprintf(out, outSize, tr(STR_SLEEP_TIMER_VALUE_FORMAT), static_cast<unsigned int>(value));
+      }
+    } else if (setting.valuePtr == &CrossPointSettings::lineHeightPercent) {
+      std::snprintf(out, outSize, "%u%%", static_cast<unsigned int>(value));
+    } else if (setting.valuePtr == &CrossPointSettings::readingIdleTimeThresholdUnits) {
+      const uint32_t seconds = SETTINGS.getReadingIdleTimeThresholdSeconds();
+      if (seconds < 60) {
+        std::snprintf(out, outSize, "%lus", static_cast<unsigned long>(seconds));
+      } else if (seconds % 60 == 0) {
+        std::snprintf(out, outSize, "%lum", static_cast<unsigned long>(seconds / 60));
+      } else {
+        std::snprintf(out, outSize, "%lum %lus", static_cast<unsigned long>(seconds / 60),
+                      static_cast<unsigned long>(seconds % 60));
+      }
+    } else if (setting.valuePtr == &CrossPointSettings::clockUtcOffsetQ) {
+      const uint8_t biasedQ = value > 104 ? 48 : value;
+      const int totalMinutes = (static_cast<int>(biasedQ) - 48) * 15;
+      const int absMinutes = totalMinutes < 0 ? -totalMinutes : totalMinutes;
+      std::snprintf(out, outSize, "UTC%c%d:%02d", totalMinutes < 0 ? '-' : '+', absMinutes / 60,
+                    absMinutes % 60);
+    } else {
+      std::snprintf(out, outSize, "%u", static_cast<unsigned int>(value));
+    }
+    return;
+  }
+  if (setting.type == SettingType::ACTION && setting.action == SettingAction::Language) {
+    std::snprintf(out, outSize, "%s", I18N.getLanguageName(I18N.getLanguage()));
+    return;
+  }
+  if (setting.type == SettingType::STRING) {
+    if (setting.nameId == StrId::STR_DEVICE_NAME) {
+      std::snprintf(out, outSize, "%s", SETTINGS.getEffectiveDeviceName());
+    } else if (setting.stringGetter) {
+      const std::string value = setting.stringGetter();
+      std::snprintf(out, outSize, "%s", value.c_str());
+    } else if (setting.stringMaxLen > 0) {
+      std::snprintf(out, outSize, "%s", reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset);
+    }
+  }
+}
 
 uint8_t enumDisplayIndexForRawValue(const SettingInfo& setting, uint8_t rawValue) {
   if (setting.enumRawValues.empty()) {
@@ -163,6 +265,32 @@ std::string formatSettingValue(const SettingInfo& setting) {
     return formatUtcOffset(SETTINGS.*(setting.valuePtr));
   }
   return std::to_string(SETTINGS.*(setting.valuePtr));
+}
+
+std::string settingValueText(const SettingInfo& setting) {
+  if (settingShowsNavigationCaret(setting)) return ">";
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+    return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+  }
+  if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
+    const uint8_t value = SETTINGS.*(setting.valuePtr);
+    const uint8_t displayValue = enumDisplayIndexForRawValue(setting, value);
+    const size_t optionCount = settingEnumOptionCount(setting);
+    return settingEnumOptionLabel(setting, displayValue < optionCount ? displayValue : 0);
+  }
+  if (setting.type == SettingType::ENUM && setting.valueGetter) {
+    return settingEnumOptionLabel(setting, setting.valueGetter());
+  }
+  if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) return formatSettingValue(setting);
+  if (setting.type == SettingType::ACTION && setting.action == SettingAction::Language) {
+    return I18N.getLanguageName(I18N.getLanguage());
+  }
+  if (setting.type == SettingType::STRING) {
+    if (setting.nameId == StrId::STR_DEVICE_NAME) return SETTINGS.getEffectiveDeviceName();
+    if (setting.stringGetter) return setting.stringGetter();
+    if (setting.stringMaxLen > 0) return reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
+  }
+  return {};
 }
 
 uint8_t valueDisplayIndexForRawValue(const SettingInfo& setting, const uint8_t rawValue) {
@@ -305,7 +433,95 @@ void SettingsActivity::setCurrentSettingsForCategory() {
       }
       break;
   }
-  settingsCount = static_cast<int>(currentSettings->size());
+  rebuildDisplayOrder();
+}
+
+void SettingsActivity::rebuildDisplayOrder() {
+  settingsCount = currentSettings ? static_cast<int>(currentSettings->size()) : 0;
+  usesDeclarativeSettingsOrder = false;
+  const CustomThemeInfo* theme = GUI.declarativeInfo();
+  if (!currentSettings || !theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV3) return;
+  if (currentSettings->size() > maxDeclarativeSettingsNodes) {
+    LOG_ERR("THEME", "Settings layout has too many nodes; using list fallback");
+    return;
+  }
+
+  bool added[maxDeclarativeSettingsNodes] = {};
+  size_t count = 0;
+  for (uint8_t orderIndex = 0; orderIndex < theme->settingsOrderCount; ++orderIndex) {
+    for (size_t sourceIndex = 0; sourceIndex < currentSettings->size(); ++sourceIndex) {
+      const SettingInfo& setting = (*currentSettings)[sourceIndex];
+      if (added[sourceIndex] || !setting.key ||
+          CustomThemeInfo::stableIdHash(setting.key) != theme->settingsOrderHashes[orderIndex]) {
+        continue;
+      }
+      displayOrder[count++] = static_cast<uint8_t>(sourceIndex);
+      added[sourceIndex] = true;
+      break;
+    }
+  }
+
+  const bool keepSectionHeaders = theme->settingsLayout == CustomThemeInfo::SettingsLayout::List;
+  for (size_t sourceIndex = 0; sourceIndex < currentSettings->size(); ++sourceIndex) {
+    if (added[sourceIndex]) continue;
+    if (!keepSectionHeaders && (*currentSettings)[sourceIndex].type == SettingType::SECTION_HEADER) continue;
+    displayOrder[count++] = static_cast<uint8_t>(sourceIndex);
+  }
+  if (count == 0) return;
+  settingsCount = static_cast<int>(count);
+  usesDeclarativeSettingsOrder = true;
+}
+
+const SettingInfo* SettingsActivity::settingAtDisplayIndex(const int index) const {
+  if (!currentSettings || index < 0 || index >= settingsCount) return nullptr;
+  const size_t sourceIndex = usesDeclarativeSettingsOrder ? displayOrder[index] : static_cast<size_t>(index);
+  return sourceIndex < currentSettings->size() ? &(*currentSettings)[sourceIndex] : nullptr;
+}
+
+bool SettingsActivity::usesSpatialSettingsLayout() const {
+  const CustomThemeInfo* theme = GUI.declarativeInfo();
+  return usesDeclarativeSettingsOrder && theme && theme->kind == CustomThemeInfo::Kind::DeclarativeV3 &&
+         theme->settingsLayout != CustomThemeInfo::SettingsLayout::List;
+}
+
+void SettingsActivity::handleSpatialNavigation() {
+  const CustomThemeInfo* theme = GUI.declarativeInfo();
+  if (!theme) return;
+  const bool left = mappedInput.wasReleased(MappedInputManager::Button::Left);
+  const bool right = mappedInput.wasReleased(MappedInputManager::Button::Right);
+  const bool up = mappedInput.wasReleased(MappedInputManager::Button::Up);
+  const bool down = mappedInput.wasReleased(MappedInputManager::Button::Down);
+  if (!left && !right && !up && !down) return;
+
+  const int columns = theme->settingsLayout == CustomThemeInfo::SettingsLayout::Cards
+                          ? 1
+                          : std::max(1, static_cast<int>(theme->settingsColumns));
+  if (selectedSettingIndex == 0) {
+    if (left || right) {
+      enterCategory(left ? ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount)
+                         : ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount));
+    } else if (settingsCount > 0) {
+      selectedSettingIndex = down ? 1 : settingsCount;
+    }
+    requestUpdate();
+    return;
+  }
+
+  if (columns == 1 && (left || right)) {
+    const int previousSelection = selectedSettingIndex;
+    enterCategory(left ? ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount)
+                       : ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount));
+    selectedSettingIndex = std::min(previousSelection, settingsCount);
+  } else if (left && (selectedSettingIndex - 1) % columns > 0) {
+    --selectedSettingIndex;
+  } else if (right && selectedSettingIndex % columns != 0 && selectedSettingIndex < settingsCount) {
+    ++selectedSettingIndex;
+  } else if (up) {
+    selectedSettingIndex = selectedSettingIndex > columns ? selectedSettingIndex - columns : 0;
+  } else if (down && selectedSettingIndex + columns <= settingsCount) {
+    selectedSettingIndex += columns;
+  }
+  requestUpdate();
 }
 
 void SettingsActivity::enterCategory(int categoryIndex) {
@@ -348,7 +564,7 @@ void SettingsActivity::openSubmenu(SettingAction action) {
   setCurrentSettingsForCategory();
   selectedSettingIndex = 1;
   while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-         (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+         settingAtDisplayIndex(selectedSettingIndex - 1)->type == SettingType::SECTION_HEADER) {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
   }
 }
@@ -596,11 +812,16 @@ void SettingsActivity::loop() {
     return;
   }
 
+  if (usesSpatialSettingsLayout()) {
+    handleSpatialNavigation();
+    return;
+  }
+
   // Handle navigation
   buttonNavigator.onNextRelease([this] {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           settingAtDisplayIndex(selectedSettingIndex - 1)->type == SettingType::SECTION_HEADER) {
       selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
     }
     requestUpdate();
@@ -609,7 +830,7 @@ void SettingsActivity::loop() {
   buttonNavigator.onPreviousRelease([this] {
     selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           settingAtDisplayIndex(selectedSettingIndex - 1)->type == SettingType::SECTION_HEADER) {
       selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
     }
     requestUpdate();
@@ -632,7 +853,7 @@ void SettingsActivity::loop() {
     setCurrentSettingsForCategory();
     // Advance past any leading section headers
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           settingAtDisplayIndex(selectedSettingIndex - 1)->type == SettingType::SECTION_HEADER) {
       const int nextIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
       if (nextIndex <= selectedSettingIndex) {
         selectedSettingIndex = settingsCount;
@@ -649,7 +870,9 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
-  const auto& setting = (*currentSettings)[selectedSetting];
+  const SettingInfo* displayedSetting = settingAtDisplayIndex(selectedSetting);
+  if (!displayedSetting) return;
+  const auto& setting = *displayedSetting;
   const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
 
@@ -887,6 +1110,68 @@ void SettingsActivity::openIdleTimeThresholdPicker() {
       });
 }
 
+void SettingsActivity::drawDeclarativeSettingsCards(const Rect rect) const {
+  const CustomThemeInfo* theme = GUI.declarativeInfo();
+  if (!theme || settingsCount <= 0 || rect.width <= 0 || rect.height <= 0) return;
+
+  const int columns = theme->settingsLayout == CustomThemeInfo::SettingsLayout::Cards
+                          ? 1
+                          : std::max(1, static_cast<int>(theme->settingsColumns));
+  const int gap = theme->settingsGap;
+  const int cardHeight = theme->settingsCardHeight;
+  const int rowsPerPage = std::max(1, (rect.height + gap) / (cardHeight + gap));
+  const int itemsPerPage = std::max(1, rowsPerPage * columns);
+  const int selectedItem = std::max(0, selectedSettingIndex - 1);
+  const int pageStart = (selectedItem / itemsPerPage) * itemsPerPage;
+  const int cellWidth = std::max(1, (rect.width - gap * (columns - 1)) / columns);
+  const bool singleColumn = columns == 1;
+
+  for (int visibleIndex = 0; visibleIndex < itemsPerPage; ++visibleIndex) {
+    const int displayIndex = pageStart + visibleIndex;
+    if (displayIndex >= settingsCount) break;
+    const SettingInfo* setting = settingAtDisplayIndex(displayIndex);
+    if (!setting) continue;
+
+    const int column = visibleIndex % columns;
+    const int row = visibleIndex / columns;
+    const Rect card{rect.x + column * (cellWidth + gap), rect.y + row * (cardHeight + gap), cellWidth,
+                    cardHeight};
+    const bool selected = selectedSettingIndex == displayIndex + 1;
+    if (selected) renderer.fillRect(card.x, card.y, card.width, card.height, true);
+    renderer.drawRoundedRect(card.x, card.y, card.width, card.height, 1, theme->settingsCardRadius, !selected);
+
+    const int padding = std::max(6, std::min(12, card.width / 12));
+    char title[settingsTitleCapacity];
+    char value[settingsValueCapacity];
+    std::snprintf(title, sizeof(title), "%s", I18N.get(setting->nameId));
+    settingValueTextInto(*setting, value, sizeof(value));
+    if (singleColumn) {
+      fitSettingsText(renderer, SMALL_FONT_ID, value, sizeof(value), card.width / 3);
+      const int valueWidth = value[0] == '\0' ? 0 : renderer.getTextWidth(SMALL_FONT_ID, value);
+      const int titleWidth = std::max(20, card.width - padding * 3 - valueWidth);
+      fitSettingsText(renderer, UI_10_FONT_ID, title, sizeof(title), titleWidth, EpdFontFamily::BOLD);
+      const int titleY = card.y + (card.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+      renderer.drawText(UI_10_FONT_ID, card.x + padding, titleY, title, !selected, EpdFontFamily::BOLD);
+      if (value[0] != '\0') {
+        renderer.drawText(SMALL_FONT_ID, card.x + card.width - padding - valueWidth,
+                          card.y + (card.height - renderer.getLineHeight(SMALL_FONT_ID)) / 2,
+                          value, !selected);
+      }
+      continue;
+    }
+
+    fitSettingsText(renderer, UI_10_FONT_ID, title, sizeof(title), card.width - padding * 2,
+                    EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, card.x + padding, card.y + padding, title, !selected, EpdFontFamily::BOLD);
+    if (value[0] != '\0') {
+      fitSettingsText(renderer, SMALL_FONT_ID, value, sizeof(value), card.width - padding * 2);
+      renderer.drawText(SMALL_FONT_ID, card.x + padding,
+                        card.y + card.height - padding - renderer.getLineHeight(SMALL_FONT_ID),
+                        value, !selected);
+    }
+  }
+}
+
 void SettingsActivity::render(RenderLock&&) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
 
@@ -907,7 +1192,6 @@ void SettingsActivity::render(RenderLock&&) {
   const int tabBarTop = CompactHeader::headerBottomY(metrics);
   GUI.drawTabBar(renderer, Rect{0, tabBarTop, pageWidth, metrics.tabBarHeight}, tabs, selectedSettingIndex == 0);
 
-  const auto& settings = *currentSettings;
   Rect listRect{
       0, tabBarTop + metrics.tabBarHeight + metrics.verticalSpacing, pageWidth,
       pageHeight - (tabBarTop + metrics.tabBarHeight + metrics.buttonHintsHeight + metrics.verticalSpacing * 2)};
@@ -924,42 +1208,31 @@ void SettingsActivity::render(RenderLock&&) {
     listRect.y += headerOffset;
     listRect.height = std::max(0, listRect.height - headerOffset);
   }
-  GUI.drawList(
-      renderer, listRect, settingsCount, selectedSettingIndex - 1,
-      [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, nullptr, nullptr,
-      [this, &settings](int i) {
-        const auto& setting = settings[i];
-        std::string valueText = "";
-        if (settingShowsNavigationCaret(setting)) {
-          valueText = ">";
-        } else if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
-          const bool value = SETTINGS.*(setting.valuePtr);
-          valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
-        } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-          const uint8_t value = SETTINGS.*(setting.valuePtr);
-          const uint8_t displayValue = enumDisplayIndexForRawValue(setting, value);
-          const size_t optionCount = settingEnumOptionCount(setting);
-          const uint8_t safeValue = displayValue < optionCount ? displayValue : 0;
-          valueText = settingEnumOptionLabel(setting, safeValue);
-        } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
-          const uint8_t value = setting.valueGetter();
-          valueText = settingEnumOptionLabel(setting, value);
-        } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-          valueText = formatSettingValue(setting);
-        } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::Language) {
-          valueText = I18N.getLanguageName(I18N.getLanguage());
-        } else if (setting.type == SettingType::STRING) {
-          if (setting.nameId == StrId::STR_DEVICE_NAME) {
-            valueText = SETTINGS.getEffectiveDeviceName();
-          } else if (setting.stringGetter) {
-            valueText = setting.stringGetter();
-          } else if (setting.stringMaxLen > 0) {
-            valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
-          }
-        }
-        return valueText;
-      },
-      true, nullptr, [&settings](int i) { return settings[i].type == SettingType::SECTION_HEADER; });
+  if (usesSpatialSettingsLayout()) {
+    listRect.x += metrics.contentSidePadding;
+    listRect.width = std::max(0, listRect.width - metrics.contentSidePadding * 2);
+    if (selectedCategoryIndex == 3) {
+      listRect.height = std::max(
+          0, listRect.height - renderer.getLineHeight(SMALL_FONT_ID) * 2 - systemVersionFooterBottomInset);
+    }
+    drawDeclarativeSettingsCards(listRect);
+  } else {
+    GUI.drawList(
+        renderer, listRect, settingsCount, selectedSettingIndex - 1,
+        [this](int index) {
+          const SettingInfo* setting = settingAtDisplayIndex(index);
+          return setting ? std::string(I18N.get(setting->nameId)) : std::string();
+        },
+        nullptr, nullptr,
+        [this](int index) {
+          const SettingInfo* setting = settingAtDisplayIndex(index);
+          return setting ? settingValueText(*setting) : std::string();
+        },
+        true, nullptr, [this](int index) {
+          const SettingInfo* setting = settingAtDisplayIndex(index);
+          return setting && setting->type == SettingType::SECTION_HEADER;
+        });
+  }
 
   // Draw CrossInk version label at the bottom of the System tab
   if (selectedCategoryIndex == 3) {
@@ -967,24 +1240,28 @@ void SettingsActivity::render(RenderLock&&) {
   }
 
   // Draw help text
+  const SettingInfo* selectedSetting = settingAtDisplayIndex(selectedSettingIndex - 1);
   const auto confirmLabel =
       (selectedSettingIndex == 0)
           ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 &&
-                     (currentSettingUsesOptionMenu((*currentSettings)[selectedSettingIndex - 1]) ||
-                      (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SUBMENU ||
-                      (*currentSettings)[selectedSettingIndex - 1].type == SettingType::ACTION ||
-                      (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_FONT_FAMILY ||
-                      (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP ||
-                      (*currentSettings)[selectedSettingIndex - 1].type == SettingType::STRING ||
-                      (*currentSettings)[selectedSettingIndex - 1].valuePtr == &CrossPointSettings::lineHeightPercent ||
-                      (*currentSettings)[selectedSettingIndex - 1].valuePtr ==
+          : (selectedSetting &&
+                     (currentSettingUsesOptionMenu(*selectedSetting) ||
+                      selectedSetting->type == SettingType::SUBMENU ||
+                      selectedSetting->type == SettingType::ACTION ||
+                      selectedSetting->nameId == StrId::STR_FONT_FAMILY ||
+                      selectedSetting->nameId == StrId::STR_TIME_TO_SLEEP ||
+                      selectedSetting->type == SettingType::STRING ||
+                      selectedSetting->valuePtr == &CrossPointSettings::lineHeightPercent ||
+                      selectedSetting->valuePtr ==
                           &CrossPointSettings::readingIdleTimeThresholdUnits ||
-                      (*currentSettings)[selectedSettingIndex - 1].valuePtr == &CrossPointSettings::screenMargin)
+                      selectedSetting->valuePtr == &CrossPointSettings::screenMargin)
                  ? tr(STR_SELECT)
                  : tr(STR_TOGGLE));
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const bool spatial = usesSpatialSettingsLayout();
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel,
+                                            spatial ? tr(STR_DIR_LEFT) : tr(STR_DIR_UP),
+                                            spatial ? tr(STR_DIR_RIGHT) : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Always use standard refresh for settings screen
