@@ -329,11 +329,11 @@ int findMenuActionIndex(const HomeMenuEntries& items, HomeMenuAction action) {
 }
 
 bool isMinimalTheme() {
-  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::MINIMAL;
+  return UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::MINIMAL;
 }
 
 bool isDashboardTheme() {
-  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::DASHBOARD;
+  return UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::DASHBOARD;
 }
 
 bool usesMinimalHomeInteraction() { return isMinimalTheme() || isDashboardTheme(); }
@@ -647,7 +647,7 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
   Rect popupRect;
 
   const bool isCarouselTheme =
-      static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+      UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
   const bool isMinimal = isMinimalTheme();
   const bool isDashboard = isDashboardTheme();
   const size_t recentBookCount = recentBooks.size();
@@ -862,7 +862,7 @@ void HomeActivity::onEnter() {
 
   hasOpdsServers = OPDS_STORE.hasServers();
   const bool isCarouselTheme =
-      static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+      UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
 
   // Check if any books have bookmarks (directory scan only, no file parsing)
   hasBookmarks = BookmarkStore::hasAnyBookmarks();
@@ -1550,7 +1550,7 @@ void HomeActivity::loop() {
   }
 
   const bool isCarousel =
-      static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+      UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
   const int previousHighlightedBookIdx = getHighlightedBookIndex();
   const int visibleBookCount = getVisibleRecentBookCount();
 
@@ -1755,8 +1755,7 @@ void HomeActivity::render(RenderLock&&) {
                              recentBooks, centerIdx, inCarouselRow);
       if (!inCarouselRow) {
         const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
-        if (static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) ==
-            CrossPointSettings::UI_THEME::LYRA_CAROUSEL) {
+        if (UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL) {
           static_cast<const LyraCarouselTheme&>(GUI).drawButtonMenuSelectionOverlay(
               renderer, static_cast<int>(menuItems.size()), selectorIndex - recentBooks.size(),
               [&menuItems](int index) { return menuItems[index].label; },
@@ -1813,7 +1812,7 @@ void HomeActivity::render(RenderLock&&) {
       [&menuItems](int index) { return menuItems[index].icon; });
 
   const bool isCarouselTheme =
-      static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+      UITheme::getInstance().getActiveBaseTheme() == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
   const auto labels = isCarouselTheme ? mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
                                       : mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

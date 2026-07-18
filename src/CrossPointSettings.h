@@ -247,7 +247,9 @@ class CrossPointSettings {
     LYRA_CAROUSEL = 4,
     MINIMAL = 5,
     DASHBOARD = 6,
-    UI_THEME_COUNT = 7
+    // Keep 0..6 stable: these values are persisted in existing settings files.
+    CUSTOM_THEME = 7,
+    UI_THEME_COUNT = 8
   };
   enum RECENT_BOOKS_VIEW { RECENT_BOOKS_LIST = 0, RECENT_BOOKS_GRID = 1, RECENT_BOOKS_VIEW_COUNT };
 
@@ -400,6 +402,19 @@ class CrossPointSettings {
   uint8_t longPressButtonBehavior = OFF;
   // UI Theme
   uint8_t uiTheme = LYRA;
+  // ID of a /themes/<id>/ package when uiTheme == CUSTOM.
+  char customThemeId[33] = "";
+  // Resolved built-in renderers used by the interactive Custom theme editor.
+  // Keeping these as enums makes a saved composition independent from an SD
+  // package that may be removed after it was used as a source.
+  uint8_t customThemeHome = LYRA;
+  uint8_t customThemeHeader = LYRA;
+  uint8_t customThemeList = LYRA;
+  uint8_t customThemeMenu = LYRA;
+  uint8_t customThemePopup = LYRA;
+  uint8_t customThemeInput = LYRA;
+  uint8_t customThemeHints = LYRA;
+  uint8_t customThemeStatus = LYRA;
   // Recent Books screen layout
   uint8_t recentBooksView = RECENT_BOOKS_LIST;
   // Sunlight fading compensation

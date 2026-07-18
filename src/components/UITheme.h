@@ -18,6 +18,7 @@ class UITheme {
 
   const ThemeMetrics& getMetrics() const { return *currentMetrics; }
   const BaseTheme& getTheme() const { return *currentTheme; }
+  CrossPointSettings::UI_THEME getActiveBaseTheme() const { return activeBaseTheme; }
   Rect getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints = false,
                          bool hasSideButtonHints = false);
   static void drawCenteredText(const GfxRenderer& renderer, Rect screen, int fontId, int y, const char* text,
@@ -45,6 +46,7 @@ class UITheme {
  private:
   const ThemeMetrics* currentMetrics;
   std::unique_ptr<BaseTheme> currentTheme;
+  CrossPointSettings::UI_THEME activeBaseTheme = CrossPointSettings::LYRA;
 };
 
 // Helper macro to access current theme

@@ -2,6 +2,8 @@
 
 ### Added
 
+- Custom UI Theme editor: combine Home, Header, List, Menu, Popup, Input, Hints, and Status Bar renderers from built-in or SD-card `/themes/<id>/theme.json` packages.
+
 - Dashboard UI theme for the Home screen, showing the current book cover and reading stats.
 - Nearby Position Sync for sending or applying the current EPUB position between two CrossInk devices over ESP-NOW.
 - Web EPUB optimizer support for CrossInk location metadata, so optimized EPUBs can keep better progress and stable page numbers.

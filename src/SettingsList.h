@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "components/CustomThemeRegistry.h"
 #include "KOReaderCredentialStore.h"
 #include "activities/settings/SettingsActivity.h"
 
@@ -255,6 +256,46 @@ inline SettingInfo buildSleepScreenSetting() {
       static_cast<uint8_t>(CrossPointSettings::DASHBOARD_SLEEP),
       static_cast<uint8_t>(CrossPointSettings::QUICK_RESUME),
   });
+  return s;
+}
+
+inline SettingInfo buildUiThemeSetting(const CustomThemeRegistry& registry) {
+  static constexpr uint8_t builtins[] = {CrossPointSettings::CLASSIC, CrossPointSettings::MINIMAL,
+                                         CrossPointSettings::DASHBOARD, CrossPointSettings::LYRA,
+                                         CrossPointSettings::LYRA_3_COVERS, CrossPointSettings::LYRA_CAROUSEL,
+                                         CrossPointSettings::ROUNDEDRAFF};
+  SettingInfo s;
+  s.nameId = StrId::STR_UI_THEME;
+  s.type = SettingType::ENUM;
+  s.key = "uiTheme";
+  s.category = StrId::STR_CAT_DISPLAY;
+  s.enumStringValues = {I18N.get(StrId::STR_THEME_CLASSIC), I18N.get(StrId::STR_THEME_MINIMAL),
+                        I18N.get(StrId::STR_THEME_DASHBOARD), I18N.get(StrId::STR_THEME_LYRA),
+                        I18N.get(StrId::STR_THEME_LYRA_EXTENDED), I18N.get(StrId::STR_THEME_LYRA_CAROUSEL),
+                        I18N.get(StrId::STR_THEME_ROUNDEDRAFF)};
+  (void)registry;
+  s.enumStringValues.push_back(I18N.get(StrId::STR_THEME_CUSTOM));
+
+  s.valueGetter = []() -> uint8_t {
+    if (SETTINGS.uiTheme != CrossPointSettings::CUSTOM_THEME) {
+      for (uint8_t i = 0; i < sizeof(builtins); ++i) {
+        if (SETTINGS.uiTheme == builtins[i]) return i;
+      }
+      return 0;
+    }
+    return 7;
+  };
+  s.valueSetter = [](uint8_t index) {
+    if (index < sizeof(builtins)) {
+      SETTINGS.uiTheme = builtins[index];
+      SETTINGS.customThemeId[0] = '\0';
+      return;
+    }
+    if (index != 7) return;
+    SETTINGS.uiTheme = CrossPointSettings::CUSTOM_THEME;
+    std::strncpy(SETTINGS.customThemeId, CustomThemeRegistry::kComposerId, sizeof(SETTINGS.customThemeId) - 1);
+    SETTINGS.customThemeId[sizeof(SETTINGS.customThemeId) - 1] = '\0';
+  };
   return s;
 }
 
@@ -697,6 +738,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     if (fontSizeIt != v.end()) {
       *fontSizeIt = buildFontSizeSetting(registry);
     }
+  }
+  if (registry) {
+    auto themeIt = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) {
+      return s.key && std::strcmp(s.key, "uiTheme") == 0;
+    });
+    if (themeIt != v.end()) *themeIt = buildUiThemeSetting(CUSTOM_THEMES);
   }
   if (!gpio.deviceIsX3()) {
     auto sleepScreenIt =

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "components/CustomThemeRegistry.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
@@ -205,6 +206,19 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   if (s.sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = s.sdFontFamilyName;
   }
+  if (s.uiTheme == CrossPointSettings::CUSTOM_THEME && s.customThemeId[0] != '\0') {
+    doc["customThemeId"] = s.customThemeId;
+    if (std::strcmp(s.customThemeId, CustomThemeRegistry::kComposerId) == 0) {
+      doc["customThemeHome"] = s.customThemeHome;
+      doc["customThemeHeader"] = s.customThemeHeader;
+      doc["customThemeList"] = s.customThemeList;
+      doc["customThemeMenu"] = s.customThemeMenu;
+      doc["customThemePopup"] = s.customThemePopup;
+      doc["customThemeInput"] = s.customThemeInput;
+      doc["customThemeHints"] = s.customThemeHints;
+      doc["customThemeStatus"] = s.customThemeStatus;
+    }
+  }
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -309,6 +323,28 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
       }
       s.*(info.valuePtr) = v;
     }
+  }
+
+  const std::string customThemeId = doc["customThemeId"] | std::string();
+  std::strncpy(s.customThemeId, customThemeId.c_str(), sizeof(s.customThemeId) - 1);
+  s.customThemeId[sizeof(s.customThemeId) - 1] = '\0';
+  if ((doc["uiTheme"] | static_cast<uint8_t>(s.uiTheme)) == CrossPointSettings::CUSTOM_THEME &&
+      s.customThemeId[0] != '\0') {
+    s.uiTheme = CrossPointSettings::CUSTOM_THEME;
+  } else if (s.uiTheme != CrossPointSettings::CUSTOM_THEME) {
+    s.customThemeId[0] = '\0';
+  }
+
+  if (std::strcmp(s.customThemeId, CustomThemeRegistry::kComposerId) == 0) {
+    const uint8_t maxBuiltInTheme = CrossPointSettings::DASHBOARD;
+    s.customThemeHome = std::min<uint8_t>(doc["customThemeHome"] | s.customThemeHome, maxBuiltInTheme);
+    s.customThemeHeader = std::min<uint8_t>(doc["customThemeHeader"] | s.customThemeHeader, maxBuiltInTheme);
+    s.customThemeList = std::min<uint8_t>(doc["customThemeList"] | s.customThemeList, maxBuiltInTheme);
+    s.customThemeMenu = std::min<uint8_t>(doc["customThemeMenu"] | s.customThemeMenu, maxBuiltInTheme);
+    s.customThemePopup = std::min<uint8_t>(doc["customThemePopup"] | s.customThemePopup, maxBuiltInTheme);
+    s.customThemeInput = std::min<uint8_t>(doc["customThemeInput"] | s.customThemeInput, maxBuiltInTheme);
+    s.customThemeHints = std::min<uint8_t>(doc["customThemeHints"] | s.customThemeHints, maxBuiltInTheme);
+    s.customThemeStatus = std::min<uint8_t>(doc["customThemeStatus"] | s.customThemeStatus, maxBuiltInTheme);
   }
 
   // Migration: preserve Minimal users' old two-line file browser default when the new

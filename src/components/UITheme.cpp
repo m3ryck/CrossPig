@@ -11,6 +11,9 @@
 
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "Memory.h"
+#include "components/CompositeTheme.h"
+#include "components/CustomThemeRegistry.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
@@ -45,10 +48,50 @@ UITheme::UITheme() {
 
 void UITheme::reload() {
   auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
+  if (themeType == CrossPointSettings::UI_THEME::CUSTOM_THEME) {
+    CustomThemeInfo composerTheme;
+    const CustomThemeInfo* customTheme = nullptr;
+    if (std::strcmp(SETTINGS.customThemeId, CustomThemeRegistry::kComposerId) == 0) {
+      composerTheme.baseTheme = SETTINGS.customThemeHome;
+      composerTheme.headerTheme = SETTINGS.customThemeHeader;
+      composerTheme.listTheme = SETTINGS.customThemeList;
+      composerTheme.menuTheme = SETTINGS.customThemeMenu;
+      composerTheme.popupTheme = SETTINGS.customThemePopup;
+      composerTheme.inputTheme = SETTINGS.customThemeInput;
+      composerTheme.hintsTheme = SETTINGS.customThemeHints;
+      composerTheme.statusTheme = SETTINGS.customThemeStatus;
+      customTheme = &composerTheme;
+    } else {
+      customTheme = CUSTOM_THEMES.find(SETTINGS.customThemeId);
+    }
+    if (customTheme) {
+      LOG_DBG("UI", "Using custom theme %s (base %d)", customTheme->id, customTheme->baseTheme);
+      themeType = static_cast<CrossPointSettings::UI_THEME>(customTheme->baseTheme);
+      setTheme(themeType);
+      // Carousel's cached-frame overlay is not composable yet.
+      if (themeType == CrossPointSettings::LYRA_CAROUSEL) return;
+      // CompositeTheme is allocated once when a custom selection is applied;
+      // it holds only stateless renderers (~a few vptrs), never a framebuffer.
+      auto composed = makeUniqueNoThrow<CompositeTheme>(*customTheme);
+      if (!composed) {
+        LOG_ERR("UI", "OOM creating custom theme %s; using base", customTheme->id);
+        return;
+      }
+      currentTheme = std::move(composed);
+      return;
+    } else {
+      LOG_ERR("UI", "Custom theme '%s' missing; falling back to Lyra", SETTINGS.customThemeId);
+      SETTINGS.uiTheme = CrossPointSettings::LYRA;
+      SETTINGS.customThemeId[0] = '\0';
+      SETTINGS.saveToFile();
+      themeType = CrossPointSettings::LYRA;
+    }
+  }
   setTheme(themeType);
 }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
+  activeBaseTheme = type;
   switch (type) {
     case CrossPointSettings::UI_THEME::CLASSIC:
       LOG_DBG("UI", "Using Classic theme");
@@ -84,6 +127,12 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using Dashboard theme");
       currentTheme = std::make_unique<DashboardTheme>();
       currentMetrics = &DashboardMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::CUSTOM_THEME:
+      // reload() resolves custom manifests before reaching this switch.
+      LOG_ERR("UI", "Unresolved custom theme; falling back to Lyra");
+      currentTheme = std::make_unique<LyraTheme>();
+      currentMetrics = &LyraMetrics::values;
       break;
     default:
       LOG_ERR("UI", "Unknown theme %d, falling back to Classic", static_cast<int>(type));

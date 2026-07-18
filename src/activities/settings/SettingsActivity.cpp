@@ -26,6 +26,7 @@
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
+#include "ThemeComposerActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -34,6 +35,8 @@
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/CompactHeader.h"
 #include "components/UITheme.h"
+#include "components/CustomThemeRegistry.h"
+#include "Memory.h"
 #include "fontIds.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
@@ -394,6 +397,22 @@ void SettingsActivity::openEnumOptionPicker(const SettingInfo& setting) {
     const bool quickResumeTimeoutChanged = selectedSetting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
     syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
     SETTINGS.saveToFile();
+    if (selectedSetting.nameId == StrId::STR_UI_THEME &&
+        SETTINGS.uiTheme == CrossPointSettings::CUSTOM_THEME) {
+      auto composer = makeUniqueNoThrow<ThemeComposerActivity>(renderer, mappedInput);
+      if (!composer) {
+        LOG_ERR("THEME", "Out of memory opening Custom theme editor");
+        rebuildSettingsLists();
+        requestUpdate();
+        return;
+      }
+      startActivityForResult(std::move(composer),
+                             [this](const ActivityResult&) {
+                               rebuildSettingsLists();
+                               requestUpdate();
+                             });
+      return;
+    }
     rebuildSettingsLists();
     requestUpdate();
   });
@@ -528,6 +547,8 @@ void SettingsActivity::onEnter() {
   quickResumeTimeoutAutoEnabled = false;
   syncQuickResumeTimeoutForSleepScreen(/*sleepScreenChanged=*/true, /*quickResumeTimeoutChanged=*/false);
 
+  // Themes may have been copied to /themes while the device was running.
+  CUSTOM_THEMES.discover();
   rebuildSettingsLists();
 
   // Trigger first update

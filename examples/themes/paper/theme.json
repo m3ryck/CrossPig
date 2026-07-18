@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "paper",
+  "name": "Paper",
+  "base": "lyra",
+  "components": {
+    "home": "lyra",
+    "header": "minimal",
+    "list": "roundedraff",
+    "menu": "roundedraff",
+    "popup": "roundedraff",
+    "input": "lyra",
+    "hints": "minimal",
+    "status": "lyra"
+  }
+}
