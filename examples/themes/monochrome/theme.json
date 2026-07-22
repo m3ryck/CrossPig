@@ -1,9 +1,10 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "engine": "declarative",
   "id": "monochrome",
   "name": "Monochrome",
   "home": {
+    "layoutEngine": "canvas",
     "topPadding": 56,
     "coverAreaHeight": 340,
     "menuTopOffset": 12,
@@ -16,6 +17,23 @@
     "showProgress": true,
     "showBookStats": false,
     "showGlobalStats": true,
+    "blocks": [
+      {
+        "type": "recentBooks",
+        "variant": "cards",
+        "frame": { "x": 30, "y": 20, "width": 940, "height": 520 }
+      },
+      {
+        "type": "globalStats",
+        "frame": { "x": 30, "y": 570, "width": 650, "height": 150 }
+      }
+    ],
+    "actions": {
+      "presentation": "panel",
+      "pinned": ["browse"],
+      "order": ["browse", "recents", "opds", "stats", "saved", "transfer", "settings"],
+      "panel": { "columns": 2 }
+    },
     "cover": {
       "x": 200,
       "y": 20,

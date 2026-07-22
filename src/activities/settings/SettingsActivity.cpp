@@ -440,7 +440,9 @@ void SettingsActivity::rebuildDisplayOrder() {
   settingsCount = currentSettings ? static_cast<int>(currentSettings->size()) : 0;
   usesDeclarativeSettingsOrder = false;
   const CustomThemeInfo* theme = GUI.declarativeInfo();
-  if (!currentSettings || !theme || theme->kind != CustomThemeInfo::Kind::DeclarativeV3) return;
+  if (!currentSettings || !theme ||
+      (theme->kind != CustomThemeInfo::Kind::DeclarativeV3 && theme->kind != CustomThemeInfo::Kind::DeclarativeV4))
+    return;
   if (currentSettings->size() > maxDeclarativeSettingsNodes) {
     LOG_ERR("THEME", "Settings layout has too many nodes; using list fallback");
     return;
@@ -480,7 +482,9 @@ const SettingInfo* SettingsActivity::settingAtDisplayIndex(const int index) cons
 
 bool SettingsActivity::usesSpatialSettingsLayout() const {
   const CustomThemeInfo* theme = GUI.declarativeInfo();
-  return usesDeclarativeSettingsOrder && theme && theme->kind == CustomThemeInfo::Kind::DeclarativeV3 &&
+  return usesDeclarativeSettingsOrder && theme &&
+         (theme->kind == CustomThemeInfo::Kind::DeclarativeV3 ||
+          theme->kind == CustomThemeInfo::Kind::DeclarativeV4) &&
          theme->settingsLayout != CustomThemeInfo::SettingsLayout::List;
 }
 

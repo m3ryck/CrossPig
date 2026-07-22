@@ -11,12 +11,43 @@ struct CustomThemeInfo {
   static constexpr size_t kIdCapacity = 33;
   static constexpr size_t kNameCapacity = 49;
   static constexpr size_t kMaxSettingsOrderItems = 8;
+  static constexpr size_t kMaxHomeCanvasBlocks = 8;
+  static constexpr size_t kMaxHomeActions = 7;
+  static constexpr size_t kMaxPinnedHomeActions = 3;
 
   char id[kIdCapacity] = {};
   char name[kNameCapacity] = {};
-  enum class Kind : uint8_t { ComposedV1, DeclarativeV2, DeclarativeV3 } kind = Kind::ComposedV1;
+  enum class Kind : uint8_t { ComposedV1, DeclarativeV2, DeclarativeV3, DeclarativeV4 } kind = Kind::ComposedV1;
   enum class SettingsLayout : uint8_t { List, Cards, Grid } settingsLayout = SettingsLayout::List;
   enum class HomeLayout : uint8_t { Spotlight, Shelf, Dashboard } homeLayout = HomeLayout::Spotlight;
+  enum class HomeCanvasBlockType : uint8_t {
+    RecentBooks,
+    BookProgress,
+    BookStats,
+    GlobalStats,
+    QuickActions,
+    MenuTrigger,
+  };
+  enum class HomeMenuPresentation : uint8_t { Inline, Panel, Hybrid } homeMenuPresentation = HomeMenuPresentation::Inline;
+  enum class HomeCanvasBlockVariant : uint8_t { Cards, Plain };
+  enum class HomeAction : uint8_t {
+    BrowseFiles,
+    RecentBooks,
+    OpdsBrowser,
+    ReadingStats,
+    SavedItems,
+    FileTransfer,
+    Settings,
+    ContinueReading,
+  };
+  struct HomeCanvasBlock {
+    HomeCanvasBlockType type = HomeCanvasBlockType::RecentBooks;
+    HomeCanvasBlockVariant variant = HomeCanvasBlockVariant::Cards;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint16_t width = 1000;
+    uint16_t height = 1000;
+  };
   uint8_t baseTheme = 0;
   uint8_t headerTheme = 0;
   uint8_t listTheme = 0;
@@ -45,6 +76,14 @@ struct CustomThemeInfo {
   bool homeShowProgress = false;
   bool homeShowBookStats = false;
   bool homeShowGlobalStats = false;
+  bool homeCanvasEnabled = false;
+  uint8_t homeCanvasBlockCount = 0;
+  uint8_t homeActionOrderCount = 0;
+  uint8_t homePinnedActionCount = 0;
+  uint8_t homePanelColumns = 2;
+  HomeCanvasBlock homeCanvasBlocks[kMaxHomeCanvasBlocks] = {};
+  HomeAction homeActionOrder[kMaxHomeActions] = {};
+  HomeAction homePinnedActions[kMaxPinnedHomeActions] = {};
   uint8_t menuColumns = 1;
   uint16_t menuRowHeight = 0;
   uint16_t menuGap = 8;
@@ -92,7 +131,9 @@ struct CustomThemeInfo {
   uint16_t settingsCardHeight = 64;
   uint32_t settingsOrderHashes[kMaxSettingsOrderItems] = {};
 
-  bool isDeclarative() const { return kind == Kind::DeclarativeV2 || kind == Kind::DeclarativeV3; }
+  bool isDeclarative() const {
+    return kind == Kind::DeclarativeV2 || kind == Kind::DeclarativeV3 || kind == Kind::DeclarativeV4;
+  }
 
   static uint32_t stableIdHash(const char* value) {
     uint32_t hash = 2166136261u;
@@ -105,9 +146,10 @@ struct CustomThemeInfo {
   }
 };
 
-// The registry retains at most 16 summaries. v3 adds eight stable setting IDs,
-// but the complete fixed-capacity registry remains bounded to at most 5 KB.
-static_assert(sizeof(CustomThemeInfo) <= 320, "CustomThemeInfo exceeded its fixed registry budget");
+// The registry retains at most 16 summaries. v4 adds a fixed eight-block Home
+// canvas; each measured summary is 380 bytes (6,080 bytes at full capacity).
+// Complete manifests and strings still remain on the SD card.
+static_assert(sizeof(CustomThemeInfo) <= 384, "CustomThemeInfo exceeded its fixed registry budget");
 
 class CustomThemeRegistry {
  public:

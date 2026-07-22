@@ -7,6 +7,8 @@
 - Declarative themes can customize Home geometry, headers, lists, menus, popups, keyboard/input, button hints, and reader status metrics, with matching previews in Theme Studio.
 - Declarative theme schema v3 can restructure Settings as a list, cards, or a spatially navigated grid and prioritize settings by stable IDs, with safe per-screen fallback.
 - Declarative Home themes can show up to three navigable recent books in Shelf, Spotlight, or Dashboard compositions, with optional title, author, progress, per-book statistics, and global statistics modules.
+- Declarative theme schema v4 adds a bounded visual Home canvas with movable blocks, inline or pinned actions, and a Menu panel that keeps navigation off the main screen.
+- Theme Studio previews both X4 and X3 screen geometry and lets authors add, remove, or clear Home blocks, including unframed recent-book compositions.
 
 - Dashboard UI theme for the Home screen, showing the current book cover and reading stats.
 - Nearby Position Sync for sending or applying the current EPUB position between two CrossInk devices over ESP-NOW.
@@ -16,9 +18,12 @@
 
 ### Changed
 
+- Theme Studio now uses a task-focused editor with local drafts, existing-theme import, contextual validation, automatic Home block arrangement, and firmware-aligned Dashboard, quick-action, and Menu previews.
 - Theme Studio now uses a responsive React/shadcn interface with grouped component controls, synchronized sliders and numeric inputs, accessible switches, and tabbed live previews.
 - Theme Studio now exports v3 packages and previews Settings list, card, and grid layouts with bounded stable-ID ordering.
 - Theme Studio now provides a modular Home composer and no longer exports decorative background images that would be obscured by book content.
+- Theme Studio now edits Home blocks directly on a snap canvas with drag, resize, block inspection, action ordering, and Design/Test modes.
+- Declarative Home themes can leave the visual canvas empty while the first device button remains a reliable shortcut to the full action menu.
 - Large EPUBs, SD-card font-heavy books, and cover thumbnails now open, index, and generate more reliably under low-memory conditions.
 - Home and sleep screens now load more cover and thumbnail data only when needed, reducing reader startup work and reusing cached cover data where possible.
 - Built-in reader font choices have been reduced to Lexend Deca and Bitter, reducing firmware size while keeping fallback glyph coverage.

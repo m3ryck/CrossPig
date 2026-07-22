@@ -153,6 +153,62 @@ but Theme Studio no longer exports decorative Home images. Disabling
 `showCover` also skips thumbnail generation, which avoids unnecessary SD and
 EPUB work for text-and-statistics-only designs.
 
+## Visual Home canvas (v4)
+
+Schema v4 adds a bounded canvas to the declarative Home. Themes position up to
+eight firmware-owned blocks with normalized `0..1000` frames. Blocks cannot
+execute code or provide their own reading data.
+
+```json
+{
+  "schemaVersion": 4,
+  "engine": "declarative",
+  "home": {
+    "layoutEngine": "canvas",
+    "blocks": [
+      {
+        "type": "recentBooks",
+        "variant": "cards",
+        "frame": { "x": 30, "y": 20, "width": 940, "height": 520 }
+      }
+    ],
+    "actions": {
+      "presentation": "panel",
+      "pinned": ["browse"],
+      "order": ["browse", "recents", "stats", "transfer", "settings"],
+      "panel": { "columns": 2 }
+    }
+  }
+}
+```
+
+Supported blocks are `recentBooks`, `bookProgress`, `bookStats`,
+`globalStats`, `quickActions`, and `menuTrigger`. Each type may appear once.
+Frames must remain completely inside the canvas. Every block is optional, and
+an empty `blocks` array creates a blank Home below the firmware header. A
+`recentBooks` block accepts `variant: "cards"` (the default) or `"plain"` to
+remove the individual book frames.
+
+Action presentation accepts:
+
+- `inline`: an optional `quickActions` block displays every available action.
+- `panel`: an optional `menuTrigger` block opens the action panel.
+- `hybrid`: `quickActions` displays up to three pinned actions and
+  `menuTrigger` opens the complete panel when those optional blocks exist.
+
+The action order is completed with any omitted firmware actions, so a theme
+cannot permanently hide Settings or library access. OPDS, reading statistics,
+and saved items appear only when their underlying firmware feature has data.
+On the Home, the logical Back control—the first button from the left with the
+default X4 mapping—is always labeled Menu and opens the complete action panel.
+This keeps navigation reachable even with an empty canvas. Up and Down move
+between canvas blocks; Left and Right navigate within recent books or quick
+actions. The panel uses spatial navigation and Back returns to the canvas.
+
+The registry stores fixed block/action arrays rather than retaining the JSON
+tree. Rendering uses the existing framebuffer and the panel is a Home state,
+not a separate Activity.
+
 ## Importing a package
 
 Open the device's Wi-Fi portal and select **Themes**. The portal imports a
@@ -163,13 +219,13 @@ an installed package requires confirmation. The device validates the manifest,
 file layout, size, and BMP format again before publishing the package, so a
 manual copy to `/themes/<id>/` remains supported.
 
-The current importer accepts declarative v2 and v3 packages. Font files and
+The current importer accepts declarative v2, v3, and v4 packages. Font files and
 scripts are intentionally not accepted.
 
 ## Theme Studio
 
 The standalone [Theme Studio](../theme-studio/README.md) application creates
-v3 packages in a normal web browser, including Settings list, card, and grid
-layouts. It is intentionally separate from the firmware and can be deployed to
-any static-file host. The device portal is
+v4 packages in a normal web browser, including the visual Home canvas and
+Settings list, card, and grid layouts. It is intentionally separate from the
+firmware and can be deployed to any static-file host. The device portal is
 only responsible for importing and managing the resulting package.

@@ -17,10 +17,18 @@ class DeclarativeTheme final : public BaseTheme {
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int count, int selected,
                       const std::function<const char*(int)>& label,
                       const std::function<UIIcon(int)>& icon) const override;
+  void setDeclarativeHomeCanvasState(int focusedBlock, int quickAction, uint16_t availableActions) const override {
+    canvasFocusedBlock_ = focusedBlock;
+    canvasQuickAction_ = quickAction;
+    canvasAvailableActions_ = availableActions;
+  }
   const CustomThemeInfo* declarativeInfo() const override { return &info_; }
 
  private:
   Rect normalized(Rect parent, uint16_t x, uint16_t y, uint16_t width, uint16_t height) const;
   void drawBackground(GfxRenderer& renderer, Rect rect) const;
   CustomThemeInfo info_;
+  mutable int canvasFocusedBlock_ = 0;
+  mutable int canvasQuickAction_ = 0;
+  mutable uint16_t canvasAvailableActions_ = 0;
 };

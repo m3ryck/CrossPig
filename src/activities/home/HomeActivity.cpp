@@ -50,16 +50,7 @@ constexpr uint32_t CAROUSEL_FRAME_MIN_MAX_ALLOC_AFTER_ALLOC = 24U * 1024U;
 constexpr unsigned long HOME_BOOK_SWAP_LONG_PRESS_MS = 1000;
 constexpr int HOME_BOOK_SWAP_RECENT_COUNT = 2;
 
-enum class HomeMenuAction {
-  BrowseFiles,
-  ContinueReading,
-  RecentBooks,
-  OpdsBrowser,
-  ReadingStats,
-  Bookmarks,
-  FileTransfer,
-  Settings,
-};
+using HomeMenuAction = CustomThemeInfo::HomeAction;
 
 struct HomeMenuEntry {
   const char* label;
@@ -261,7 +252,7 @@ void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasRe
     items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
   }
   if (hasBookmarks || hasClippings) {
-    items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::Bookmarks});
+    items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::SavedItems});
   }
 
   items.push({tr(STR_FILE_TRANSFER), Transfer, HomeMenuAction::FileTransfer});
@@ -274,6 +265,76 @@ HomeMenuEntries buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bo
   return items;
 }
 
+HomeMenuEntries orderedDeclarativeMenuItems(const CustomThemeInfo& theme, bool hasOpdsServers, bool hasReadingStats,
+                                            bool hasBookmarks, bool hasClippings) {
+  const HomeMenuEntries available =
+      buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+  HomeMenuEntries ordered;
+  for (uint8_t orderIndex = 0; orderIndex < theme.homeActionOrderCount; ++orderIndex) {
+    for (int itemIndex = 0; itemIndex < available.size(); ++itemIndex) {
+      if (available[itemIndex].action == theme.homeActionOrder[orderIndex]) {
+        ordered.push(available[itemIndex]);
+        break;
+      }
+    }
+  }
+  return ordered;
+}
+
+HomeMenuEntries pinnedDeclarativeMenuItems(const CustomThemeInfo& theme, bool hasOpdsServers, bool hasReadingStats,
+                                           bool hasBookmarks, bool hasClippings) {
+  if (theme.homeMenuPresentation == CustomThemeInfo::HomeMenuPresentation::Inline) {
+    return orderedDeclarativeMenuItems(theme, hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+  }
+  const HomeMenuEntries available =
+      buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+  HomeMenuEntries pinned;
+  for (uint8_t pinnedIndex = 0; pinnedIndex < theme.homePinnedActionCount; ++pinnedIndex) {
+    for (int itemIndex = 0; itemIndex < available.size(); ++itemIndex) {
+      if (available[itemIndex].action == theme.homePinnedActions[pinnedIndex]) {
+        pinned.push(available[itemIndex]);
+        break;
+      }
+    }
+  }
+  return pinned;
+}
+
+uint16_t availableHomeActionsMask(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
+  const HomeMenuEntries items = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings);
+  uint16_t mask = 0;
+  for (int i = 0; i < items.size(); ++i) mask |= 1U << static_cast<uint8_t>(items[i].action);
+  return mask;
+}
+
+bool canvasBlockIsInteractive(const CustomThemeInfo::HomeCanvasBlock& block, bool hasBooks,
+                              int pinnedActionCount) {
+  switch (block.type) {
+    case CustomThemeInfo::HomeCanvasBlockType::RecentBooks:
+      return hasBooks;
+    case CustomThemeInfo::HomeCanvasBlockType::QuickActions:
+      return pinnedActionCount > 0;
+    case CustomThemeInfo::HomeCanvasBlockType::MenuTrigger:
+      return true;
+    case CustomThemeInfo::HomeCanvasBlockType::BookProgress:
+    case CustomThemeInfo::HomeCanvasBlockType::BookStats:
+    case CustomThemeInfo::HomeCanvasBlockType::GlobalStats:
+      return false;
+  }
+  return false;
+}
+
+int nextCanvasInteractiveBlock(const CustomThemeInfo& theme, int current, int direction, bool hasBooks,
+                               int pinnedActionCount) {
+  if (theme.homeCanvasBlockCount == 0) return -1;
+  for (uint8_t step = 1; step <= theme.homeCanvasBlockCount; ++step) {
+    const int candidate =
+        (current + direction * step + theme.homeCanvasBlockCount * 2) % theme.homeCanvasBlockCount;
+    if (canvasBlockIsInteractive(theme.homeCanvasBlocks[candidate], hasBooks, pinnedActionCount)) return candidate;
+  }
+  return -1;
+}
+
 HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks, bool hasClippings) {
   HomeMenuEntries items;
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
@@ -282,7 +343,7 @@ HomeMenuEntries buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats,
     items.push({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
   }
   if (hasBookmarks || hasClippings) {
-    items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::Bookmarks});
+    items.push({savedItemsLabel(hasBookmarks, hasClippings), BookmarkIcon, HomeMenuAction::SavedItems});
   }
   if (hasReadingStats) {
     items.push({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
@@ -536,7 +597,10 @@ int getHomeMenuSelectionOffset(const std::vector<RecentBook>& recentBooks) {
 
 const CustomThemeInfo* declarativeHomeInfo() {
   const CustomThemeInfo* info = GUI.declarativeInfo();
-  return info && info->kind == CustomThemeInfo::Kind::DeclarativeV3 ? info : nullptr;
+  return info && (info->kind == CustomThemeInfo::Kind::DeclarativeV3 ||
+                  info->kind == CustomThemeInfo::Kind::DeclarativeV4)
+             ? info
+             : nullptr;
 }
 
 bool usesDeclarativeSpatialHome() {
@@ -892,6 +956,10 @@ void HomeActivity::onEnter() {
   minimalSuppressInitialFrontRelease = usesMinimalHomeInteraction();
   minimalMenuIndex = 0;
   minimalHomeNavIndex = -1;
+  declarativeMenuOpen = false;
+  declarativePanelIndex = 0;
+  declarativeFocusedBlock = 0;
+  declarativeQuickActionIndex = 0;
   carouselFramesReady = false;
   carouselWarmupPending = isCarouselTheme;
 
@@ -927,14 +995,31 @@ void HomeActivity::onEnter() {
   }
   updateHighlightedBookContext();
 
+  if (declarativeInfo && declarativeInfo->homeCanvasEnabled) {
+    const auto pinned = pinnedDeclarativeMenuItems(*declarativeInfo, hasOpdsServers, hasReadingStats, hasBookmarks,
+                                                   hasClippings);
+    const int firstBlock =
+        nextCanvasInteractiveBlock(*declarativeInfo, -1, 1, !recentBooks.empty(), static_cast<int>(pinned.size()));
+    declarativeFocusedBlock = firstBlock >= 0 ? firstBlock : 0;
+  }
+
   if (initialMenuItem != HomeMenuItem::NONE) {
-    const bool includeContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
-    const auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings,
-                                                        includeContinueReading);
+    const bool canvasHome = declarativeInfo && declarativeInfo->homeCanvasEnabled;
+    const bool includeContinueReading = !canvasHome && metrics.homeContinueReadingInMenu && !recentBooks.empty();
+    const auto menuItems = canvasHome
+                               ? orderedDeclarativeMenuItems(*declarativeInfo, hasOpdsServers, hasReadingStats,
+                                                             hasBookmarks, hasClippings)
+                               : buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
+                                                              hasClippings, includeContinueReading);
     const int menuIndex = findMenuActionIndex(menuItems, homeActionForInitialMenuItem(initialMenuItem));
     if (menuIndex >= 0) {
-      selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
-      updateHighlightedBookContext();
+      if (canvasHome) {
+        declarativeMenuOpen = true;
+        declarativePanelIndex = menuIndex;
+      } else {
+        selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+        updateHighlightedBookContext();
+      }
     }
   }
 
@@ -1482,7 +1567,7 @@ void HomeActivity::loop() {
           case HomeMenuAction::ReadingStats:
             onReadingStatsOpen();
             break;
-          case HomeMenuAction::Bookmarks:
+          case HomeMenuAction::SavedItems:
             onSavedItemsOpen();
             break;
           case HomeMenuAction::FileTransfer:
@@ -1566,6 +1651,101 @@ void HomeActivity::loop() {
         activateMinimalHomeNav(minimalHomeNavIndex);
       }
       return;
+    }
+    return;
+  }
+
+  const CustomThemeInfo* canvasTheme = declarativeHomeInfo();
+  if (canvasTheme && canvasTheme->homeCanvasEnabled) {
+    const HomeMenuEntries menuItems = orderedDeclarativeMenuItems(*canvasTheme, hasOpdsServers, hasReadingStats,
+                                                                  hasBookmarks, hasClippings);
+    const HomeMenuEntries pinnedItems = pinnedDeclarativeMenuItems(*canvasTheme, hasOpdsServers, hasReadingStats,
+                                                                   hasBookmarks, hasClippings);
+    if (declarativeMenuOpen) {
+      const int menuCount = menuItems.size();
+      if (menuCount <= 0) {
+        declarativeMenuOpen = false;
+        requestUpdate();
+        return;
+      }
+      declarativePanelIndex = std::clamp(declarativePanelIndex, 0, menuCount - 1);
+      const int columns = std::max(1, static_cast<int>(canvasTheme->homePanelColumns));
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        declarativeMenuOpen = false;
+        requestUpdate();
+        return;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Left) && declarativePanelIndex % columns > 0) {
+        --declarativePanelIndex;
+        requestUpdate();
+      } else if (mappedInput.wasReleased(MappedInputManager::Button::Right) &&
+                 declarativePanelIndex % columns < columns - 1 && declarativePanelIndex + 1 < menuCount) {
+        ++declarativePanelIndex;
+        requestUpdate();
+      } else if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+        declarativePanelIndex = declarativePanelIndex >= columns ? declarativePanelIndex - columns : menuCount - 1;
+        requestUpdate();
+      } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+        declarativePanelIndex = declarativePanelIndex + columns < menuCount ? declarativePanelIndex + columns : 0;
+        requestUpdate();
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        activateHomeAction(menuItems[declarativePanelIndex].action);
+      }
+      return;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      declarativeMenuOpen = true;
+      declarativePanelIndex = 0;
+      requestUpdate();
+      return;
+    }
+
+    if (canvasTheme->homeCanvasBlockCount == 0) return;
+
+    const auto& focusedBlock = canvasTheme->homeCanvasBlocks[declarativeFocusedBlock];
+    const bool up = mappedInput.wasReleased(MappedInputManager::Button::Up);
+    const bool down = mappedInput.wasReleased(MappedInputManager::Button::Down);
+    if (up || down) {
+      const int direction = up ? -1 : 1;
+      const int nextBlock = nextCanvasInteractiveBlock(*canvasTheme, declarativeFocusedBlock, direction,
+                                                       !recentBooks.empty(), pinnedItems.size());
+      if (nextBlock >= 0) declarativeFocusedBlock = nextBlock;
+      requestUpdate();
+      return;
+    }
+    const bool previous = mappedInput.wasReleased(MappedInputManager::Button::Left);
+    const bool next = mappedInput.wasReleased(MappedInputManager::Button::Right);
+    if ((previous || next) && focusedBlock.type == CustomThemeInfo::HomeCanvasBlockType::RecentBooks &&
+        !recentBooks.empty()) {
+      const int count = getVisibleRecentBookCount();
+      selectorIndex = previous ? ButtonNavigator::previousIndex(selectorIndex, count)
+                               : ButtonNavigator::nextIndex(selectorIndex, count);
+      lastCarouselBookIndex = selectorIndex;
+      updateHighlightedBookContext();
+      requestUpdate();
+      return;
+    }
+    if ((previous || next) && focusedBlock.type == CustomThemeInfo::HomeCanvasBlockType::QuickActions &&
+        pinnedItems.size() > 0) {
+      declarativeQuickActionIndex =
+          previous ? ButtonNavigator::previousIndex(declarativeQuickActionIndex, pinnedItems.size())
+                   : ButtonNavigator::nextIndex(declarativeQuickActionIndex, pinnedItems.size());
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (focusedBlock.type == CustomThemeInfo::HomeCanvasBlockType::RecentBooks && !recentBooks.empty()) {
+        onSelectBook(recentBooks[std::clamp(selectorIndex, 0, getVisibleRecentBookCount() - 1)].path);
+      } else if (focusedBlock.type == CustomThemeInfo::HomeCanvasBlockType::QuickActions && pinnedItems.size() > 0) {
+        declarativeQuickActionIndex = std::clamp(declarativeQuickActionIndex, 0, pinnedItems.size() - 1);
+        activateHomeAction(pinnedItems[declarativeQuickActionIndex].action);
+      } else if (focusedBlock.type == CustomThemeInfo::HomeCanvasBlockType::MenuTrigger) {
+        declarativeMenuOpen = true;
+        declarativePanelIndex = 0;
+        requestUpdate();
+      }
     }
     return;
   }
@@ -1679,7 +1859,7 @@ void HomeActivity::loop() {
       case HomeMenuAction::ReadingStats:
         onReadingStatsOpen();
         break;
-      case HomeMenuAction::Bookmarks:
+      case HomeMenuAction::SavedItems:
         onSavedItemsOpen();
         break;
       case HomeMenuAction::FileTransfer:
@@ -1745,6 +1925,53 @@ void HomeActivity::render(RenderLock&&) {
     }
 
     if (!recentsLoaded && !recentsLoading) {
+      recentsLoading = true;
+      loadRecentCovers(metrics.homeCoverHeight);
+    }
+    return;
+  }
+
+  const CustomThemeInfo* canvasTheme = declarativeHomeInfo();
+  if (canvasTheme && canvasTheme->homeCanvasEnabled) {
+    renderer.clearScreen();
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
+    const int contentTop = metrics.homeTopPadding;
+    const int contentHeight = std::max(0, pageHeight - contentTop - metrics.buttonHintsHeight);
+    if (declarativeMenuOpen) {
+      const HomeMenuEntries menuItems = orderedDeclarativeMenuItems(*canvasTheme, hasOpdsServers, hasReadingStats,
+                                                                    hasBookmarks, hasClippings);
+      GUI.drawButtonMenu(
+          renderer, Rect{metrics.contentSidePadding, contentTop + metrics.verticalSpacing,
+                         std::max(0, pageWidth - metrics.contentSidePadding * 2),
+                         std::max(0, contentHeight - metrics.verticalSpacing * 2)},
+          menuItems.size(), declarativePanelIndex,
+          [&menuItems](int index) { return menuItems[index].label; },
+          [&menuItems](int index) { return menuItems[index].icon; });
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    } else {
+      GUI.setDeclarativeHomeCanvasState(
+          declarativeFocusedBlock, declarativeQuickActionIndex,
+          availableHomeActionsMask(hasOpdsServers, hasReadingStats, hasBookmarks, hasClippings));
+      bool bufferRestored = false;
+      GUI.drawRecentBookCover(
+          renderer, Rect{0, contentTop, pageWidth, contentHeight}, recentBooks, getHighlightedBookIndex(),
+          coverRendered, coverBufferStored, bufferRestored, [] { return false; },
+          hasAnyBookStats(currentBookStats) ? &currentBookStats : nullptr, currentBookProgressPercent, &globalStats,
+          currentBookChapterTitle.c_str());
+      const bool hasCanvasBlocks = canvasTheme->homeCanvasBlockCount > 0;
+      const auto labels = mappedInput.mapLabels(tr(STR_MENU), hasCanvasBlocks ? tr(STR_SELECT) : "",
+                                                hasCanvasBlocks ? tr(STR_DIR_UP) : "",
+                                                hasCanvasBlocks ? tr(STR_DIR_DOWN) : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
+    renderer.displayBuffer();
+    if (!firstRenderDone) {
+      firstRenderDone = true;
+      requestUpdate();
+      return;
+    }
+    if (!declarativeMenuOpen && !recentsLoaded && !recentsLoading) {
       recentsLoading = true;
       loadRecentCovers(metrics.homeCoverHeight);
     }
@@ -1914,6 +2141,35 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::activateHomeAction(const CustomThemeInfo::HomeAction action) {
+  switch (action) {
+    case CustomThemeInfo::HomeAction::BrowseFiles:
+      onFileBrowserOpen();
+      break;
+    case CustomThemeInfo::HomeAction::ContinueReading:
+      onContinueReading();
+      break;
+    case CustomThemeInfo::HomeAction::RecentBooks:
+      onRecentsOpen();
+      break;
+    case CustomThemeInfo::HomeAction::OpdsBrowser:
+      onOpdsBrowserOpen();
+      break;
+    case CustomThemeInfo::HomeAction::ReadingStats:
+      onReadingStatsOpen();
+      break;
+    case CustomThemeInfo::HomeAction::SavedItems:
+      onSavedItemsOpen();
+      break;
+    case CustomThemeInfo::HomeAction::FileTransfer:
+      onFileTransferOpen();
+      break;
+    case CustomThemeInfo::HomeAction::Settings:
+      onSettingsOpen();
+      break;
+  }
+}
 
 void HomeActivity::onReadingStatsOpen() {
   const int highlightedBookIdx = getHighlightedBookIndex();

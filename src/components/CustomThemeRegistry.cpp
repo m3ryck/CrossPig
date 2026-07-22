@@ -83,6 +83,63 @@ bool homeLayoutForName(const char* name, CustomThemeInfo::HomeLayout& out) {
   return true;
 }
 
+bool homeCanvasBlockTypeForName(const char* name, CustomThemeInfo::HomeCanvasBlockType& out) {
+  if (!name) return false;
+  if (std::strcmp(name, "recentBooks") == 0) out = CustomThemeInfo::HomeCanvasBlockType::RecentBooks;
+  else if (std::strcmp(name, "bookProgress") == 0) out = CustomThemeInfo::HomeCanvasBlockType::BookProgress;
+  else if (std::strcmp(name, "bookStats") == 0) out = CustomThemeInfo::HomeCanvasBlockType::BookStats;
+  else if (std::strcmp(name, "globalStats") == 0) out = CustomThemeInfo::HomeCanvasBlockType::GlobalStats;
+  else if (std::strcmp(name, "quickActions") == 0) out = CustomThemeInfo::HomeCanvasBlockType::QuickActions;
+  else if (std::strcmp(name, "menuTrigger") == 0) out = CustomThemeInfo::HomeCanvasBlockType::MenuTrigger;
+  else return false;
+  return true;
+}
+
+bool homeCanvasBlockVariantForName(const char* name, CustomThemeInfo::HomeCanvasBlockVariant& out) {
+  if (!name || name[0] == '\0' || std::strcmp(name, "cards") == 0) {
+    out = CustomThemeInfo::HomeCanvasBlockVariant::Cards;
+  } else if (std::strcmp(name, "plain") == 0) {
+    out = CustomThemeInfo::HomeCanvasBlockVariant::Plain;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool homeMenuPresentationForName(const char* name, CustomThemeInfo::HomeMenuPresentation& out) {
+  if (!name || std::strcmp(name, "inline") == 0) out = CustomThemeInfo::HomeMenuPresentation::Inline;
+  else if (std::strcmp(name, "panel") == 0) out = CustomThemeInfo::HomeMenuPresentation::Panel;
+  else if (std::strcmp(name, "hybrid") == 0) out = CustomThemeInfo::HomeMenuPresentation::Hybrid;
+  else return false;
+  return true;
+}
+
+bool homeActionForName(const char* name, CustomThemeInfo::HomeAction& out) {
+  if (!name) return false;
+  if (std::strcmp(name, "browse") == 0) out = CustomThemeInfo::HomeAction::BrowseFiles;
+  else if (std::strcmp(name, "recents") == 0) out = CustomThemeInfo::HomeAction::RecentBooks;
+  else if (std::strcmp(name, "opds") == 0) out = CustomThemeInfo::HomeAction::OpdsBrowser;
+  else if (std::strcmp(name, "stats") == 0) out = CustomThemeInfo::HomeAction::ReadingStats;
+  else if (std::strcmp(name, "saved") == 0) out = CustomThemeInfo::HomeAction::SavedItems;
+  else if (std::strcmp(name, "transfer") == 0) out = CustomThemeInfo::HomeAction::FileTransfer;
+  else if (std::strcmp(name, "settings") == 0) out = CustomThemeInfo::HomeAction::Settings;
+  else return false;
+  return true;
+}
+
+template <size_t Capacity>
+bool appendUniqueHomeAction(const JsonVariantConst item, CustomThemeInfo::HomeAction (&target)[Capacity],
+                            uint8_t& count) {
+  if (count >= Capacity) return false;
+  CustomThemeInfo::HomeAction action;
+  if (!homeActionForName(item.as<const char*>(), action)) return false;
+  for (uint8_t i = 0; i < count; ++i) {
+    if (target[i] == action) return false;
+  }
+  target[count++] = action;
+  return true;
+}
+
 bool normalizedValue(const JsonVariantConst value, uint16_t fallback, uint16_t& out) {
   if (value.isNull()) {
     out = fallback;
@@ -153,7 +210,7 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
     return false;
   }
   const int schemaVersion = doc["schemaVersion"] | 0;
-  if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3) {
+  if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3 && schemaVersion != 4) {
     LOG_ERR("THEME", "Unsupported schema in %s", manifestPath);
     return false;
   }
@@ -168,10 +225,11 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
 
   std::strncpy(out.id, id, sizeof(out.id) - 1);
   std::strncpy(out.name, name, sizeof(out.name) - 1);
-  if (schemaVersion == 2 || schemaVersion == 3) {
+  if (schemaVersion >= 2 && schemaVersion <= 4) {
     if (std::strcmp(doc["engine"] | "", "declarative") != 0) return false;
-    out.kind = schemaVersion == 3 ? CustomThemeInfo::Kind::DeclarativeV3
-                                  : CustomThemeInfo::Kind::DeclarativeV2;
+    out.kind = schemaVersion == 4 ? CustomThemeInfo::Kind::DeclarativeV4
+                                  : (schemaVersion == 3 ? CustomThemeInfo::Kind::DeclarativeV3
+                                                        : CustomThemeInfo::Kind::DeclarativeV2);
     out.baseTheme = CrossPointSettings::LYRA;  // neutral metrics for legacy activities
     const JsonObjectConst home = doc["home"].as<JsonObjectConst>();
     const JsonObjectConst cover = home["cover"].as<JsonObjectConst>();
@@ -195,7 +253,7 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
     out.menuColumns = static_cast<uint8_t>(columns);
     out.menuRowHeight = static_cast<uint16_t>(rowHeight);
     out.menuGap = static_cast<uint16_t>(gap);
-    if (schemaVersion == 3) {
+    if (schemaVersion >= 3) {
       if (out.homeCoverAreaHeight < 180 || !homeLayoutForName(home["layout"] | "spotlight", out.homeLayout) ||
           !boundedByte(home["recentBooks"], out.homeRecentBooks, 1, 3, out.homeRecentBooks) ||
           !boundedByte(home["bookGap"], out.homeBookGap, 0, 40, out.homeBookGap)) {
@@ -207,6 +265,56 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
       out.homeShowProgress = home["showProgress"] | out.homeShowProgress;
       out.homeShowBookStats = home["showBookStats"] | out.homeShowBookStats;
       out.homeShowGlobalStats = home["showGlobalStats"] | out.homeShowGlobalStats;
+    }
+    if (schemaVersion == 4) {
+      const char* layoutEngine = home["layoutEngine"] | "";
+      const JsonArrayConst blocks = home["blocks"].as<JsonArrayConst>();
+      if (std::strcmp(layoutEngine, "canvas") != 0 || blocks.isNull() ||
+          blocks.size() > CustomThemeInfo::kMaxHomeCanvasBlocks) {
+        return false;
+      }
+      bool blockTypeAdded[6] = {};
+      for (const JsonObjectConst block : blocks) {
+        CustomThemeInfo::HomeCanvasBlock parsed;
+        const JsonObjectConst frame = block["frame"].as<JsonObjectConst>();
+        if (frame.isNull() || !homeCanvasBlockTypeForName(block["type"] | "", parsed.type) ||
+            (parsed.type == CustomThemeInfo::HomeCanvasBlockType::RecentBooks &&
+             !homeCanvasBlockVariantForName(block["variant"] | "cards", parsed.variant)) ||
+            !normalizedValue(frame["x"], 0, parsed.x) || !normalizedValue(frame["y"], 0, parsed.y) ||
+            !normalizedValue(frame["width"], 0, parsed.width) ||
+            !normalizedValue(frame["height"], 0, parsed.height) || parsed.width == 0 || parsed.height == 0 ||
+            parsed.x + parsed.width > 1000 || parsed.y + parsed.height > 1000) {
+          return false;
+        }
+        const uint8_t typeIndex = static_cast<uint8_t>(parsed.type);
+        if (typeIndex >= sizeof(blockTypeAdded) || blockTypeAdded[typeIndex]) return false;
+        blockTypeAdded[typeIndex] = true;
+        out.homeCanvasBlocks[out.homeCanvasBlockCount++] = parsed;
+      }
+
+      const JsonObjectConst actions = home["actions"].as<JsonObjectConst>();
+      if (actions.isNull() ||
+          !homeMenuPresentationForName(actions["presentation"] | "panel", out.homeMenuPresentation) ||
+          !boundedByte(actions["panel"]["columns"], out.homePanelColumns, 1, 3, out.homePanelColumns)) {
+        return false;
+      }
+      for (const JsonVariantConst item : actions["order"].as<JsonArrayConst>()) {
+        if (!appendUniqueHomeAction(item, out.homeActionOrder, out.homeActionOrderCount)) return false;
+      }
+      constexpr CustomThemeInfo::HomeAction defaultActions[] = {
+          CustomThemeInfo::HomeAction::BrowseFiles, CustomThemeInfo::HomeAction::RecentBooks,
+          CustomThemeInfo::HomeAction::OpdsBrowser, CustomThemeInfo::HomeAction::ReadingStats,
+          CustomThemeInfo::HomeAction::SavedItems, CustomThemeInfo::HomeAction::FileTransfer,
+          CustomThemeInfo::HomeAction::Settings};
+      for (const auto action : defaultActions) {
+        bool present = false;
+        for (uint8_t i = 0; i < out.homeActionOrderCount; ++i) present = present || out.homeActionOrder[i] == action;
+        if (!present) out.homeActionOrder[out.homeActionOrderCount++] = action;
+      }
+      for (const JsonVariantConst item : actions["pinned"].as<JsonArrayConst>()) {
+        if (!appendUniqueHomeAction(item, out.homePinnedActions, out.homePinnedActionCount)) return false;
+      }
+      out.homeCanvasEnabled = true;
     }
     const JsonObjectConst header = doc["header"].as<JsonObjectConst>();
     const JsonObjectConst list = doc["list"].as<JsonObjectConst>();
@@ -247,7 +355,7 @@ bool CustomThemeRegistry::loadManifest(const char* directoryName, CustomThemeInf
     out.popupTextInverted = popup["inverted"] | out.popupTextInverted;
     out.keyboardFillUnselected = input["fillUnselected"] | out.keyboardFillUnselected;
     out.keyboardOutlineUnselected = input["outlineUnselected"] | out.keyboardOutlineUnselected;
-    if (schemaVersion == 3) {
+    if (schemaVersion >= 3) {
       const JsonObjectConst settings = doc["screens"]["settings"].as<JsonObjectConst>();
       if (!settings.isNull()) {
         bool validSettingsScreen =

@@ -8,6 +8,7 @@
 #include "activities/Activity.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/GlobalReadingStats.h"
+#include "components/CustomThemeRegistry.h"
 #include "util/ButtonNavigator.h"
 
 struct RecentBook;
@@ -37,6 +38,10 @@ class HomeActivity final : public Activity {
   bool homeBookSwapLongPressHandled = false;
   int minimalMenuIndex = 0;
   int minimalHomeNavIndex = -1;
+  bool declarativeMenuOpen = false;
+  int declarativePanelIndex = 0;
+  int declarativeFocusedBlock = 0;
+  int declarativeQuickActionIndex = 0;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
@@ -76,6 +81,7 @@ class HomeActivity final : public Activity {
   void onOpdsBrowserOpen();
   void onReadingStatsOpen();
   void onSavedItemsOpen();
+  void activateHomeAction(CustomThemeInfo::HomeAction action);
 
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
