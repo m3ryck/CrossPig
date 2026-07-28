@@ -13,15 +13,19 @@ OVERRIDES = f"""
 #define HAVE_FFDHE_2048
 #endif
 #undef FP_MAX_BITS
-#define FP_MAX_BITS 16384
+#define FP_MAX_BITS 8192
 """
 
 
 def patch_user_settings(path: Path) -> None:
-    text = path.read_text()
+    original_text = path.read_text()
+    text = original_text
     if MARKER in text:
         text = text.split(MARKER, 1)[0].rstrip()
-    path.write_text(text + OVERRIDES + "\n")
+    patched_text = text + OVERRIDES + "\n"
+    if original_text == patched_text:
+        return
+    path.write_text(patched_text)
     print(f"Patched wolfSSL settings: {path.relative_to(PROJECT_DIR)}")
 
 

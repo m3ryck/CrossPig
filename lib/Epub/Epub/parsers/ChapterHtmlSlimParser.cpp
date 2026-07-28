@@ -23,17 +23,16 @@
 #include "Epub.h"
 #include "Epub/Page.h"
 #include "Epub/converters/ImageDecoderFactory.h"
+#include "Epub/converters/ImageDimsProbe.h"
 #include "Epub/converters/ImageToFramebufferDecoder.h"
 #include "Epub/htmlEntities.h"
+#include "PreviewBlockLocator.h"
 
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
 // Initial slab for the parse arena. Covers both style stacks (~2 KB) with headroom for growth.
 constexpr size_t PARSE_ARENA_SLAB_SIZE = 4 * 1024;
-constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 1024;
-constexpr uint32_t MIN_FREE_HEAP_FOR_TEXT_LAYOUT = 44 * 1024;
-constexpr uint32_t MIN_MAX_ALLOC_FOR_TEXT_LAYOUT = 32 * 1024;
 constexpr uint32_t MIN_FREE_HEAP_FOR_TABLE_BUFFERING = 64 * 1024;
 constexpr uint32_t MIN_MAX_ALLOC_FOR_TABLE_BUFFERING = 40 * 1024;
 constexpr size_t DEFAULT_BUFFERED_WORDS_BEFORE_LAYOUT = 350;
@@ -71,7 +70,7 @@ static constexpr const char* const ITALIC_TAGS[] = {"i", "em"};
 static constexpr const char* const UNDERLINE_TAGS[] = {"u", "ins"};
 static constexpr const char* const STRIKETHROUGH_TAGS[] = {"s", "strike", "del"};
 static constexpr const char* const IMAGE_TAGS[] = {"img", "image"};
-static constexpr const char* const SKIP_TAGS[] = {"head"};
+static constexpr const char* const SKIP_TAGS[] = {"head", "rp"};
 
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
@@ -152,6 +151,34 @@ static bool tokenEqualsIgnoreCase(const char* value, const char* token, const si
     if (asciiLower(value[i]) != asciiLower(token[i])) return false;
   }
   return true;
+}
+
+std::string trimAndNormalize(const std::string& str) {
+  if (str.empty()) return "";
+  size_t start = 0;
+  while (start < str.size() && isWhitespace(str[start])) {
+    start++;
+  }
+  if (start == str.size()) return "";
+  size_t end = str.size() - 1;
+  while (end > start && isWhitespace(str[end])) {
+    end--;
+  }
+  std::string result;
+  result.reserve(end - start + 1);
+  bool inSpace = false;
+  for (size_t i = start; i <= end; i++) {
+    if (isWhitespace(str[i])) {
+      if (!inSpace) {
+        result.push_back(' ');
+        inSpace = true;
+      }
+    } else {
+      result.push_back(str[i]);
+      inSpace = false;
+    }
+  }
+  return result;
 }
 
 bool matches(const char* tag_name, const char* const* possible_tags, size_t count) {
@@ -322,7 +349,8 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
   }
 
   auto heap = MemoryBudget::snapshot();
-  if (heap.freeHeap >= MIN_FREE_HEAP_FOR_TEXT_LAYOUT && heap.maxAllocHeap >= MIN_MAX_ALLOC_FOR_TEXT_LAYOUT) {
+  if (MemoryBudget::hasHeap(heap, MemoryBudget::EPUB_TEXT_LAYOUT_MIN_FREE,
+                            MemoryBudget::EPUB_TEXT_LAYOUT_MIN_MAX_ALLOC)) {
     return false;
   }
 
@@ -333,7 +361,8 @@ bool ChapterHtmlSlimParser::shouldAbortForLowMemory(const char* stage) {
       LOG_DBG("EHP", "Released SD font caches before %s: free=%u->%u maxAlloc=%u->%u", stage, heap.freeHeap,
               afterRelease.freeHeap, heap.maxAllocHeap, afterRelease.maxAllocHeap);
       heap = afterRelease;
-      if (heap.freeHeap >= MIN_FREE_HEAP_FOR_TEXT_LAYOUT && heap.maxAllocHeap >= MIN_MAX_ALLOC_FOR_TEXT_LAYOUT) {
+      if (MemoryBudget::hasHeap(heap, MemoryBudget::EPUB_TEXT_LAYOUT_MIN_FREE,
+                                MemoryBudget::EPUB_TEXT_LAYOUT_MIN_MAX_ALLOC)) {
         return false;
       }
     }
@@ -355,7 +384,8 @@ bool ChapterHtmlSlimParser::startNewPage(const char* reason) {
   }
 
   const auto heap = MemoryBudget::snapshot();
-  if (heap.freeHeap >= MIN_FREE_HEAP_FOR_TEXT_LAYOUT && heap.maxAllocHeap >= PAGE_ELEMENT_RESERVE_MIN_MAX_ALLOC) {
+  if (heap.freeHeap >= MemoryBudget::EPUB_TEXT_LAYOUT_MIN_FREE &&
+      heap.maxAllocHeap >= PAGE_ELEMENT_RESERVE_MIN_MAX_ALLOC) {
     currentPage->elements.reserve(INITIAL_PAGE_ELEMENT_RESERVE);
   }
   currentPageNextY = 0;
@@ -403,7 +433,60 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
   pendingAnchorFromInlineA = false;
 }
 
+// Resolves previewAnchor to the element ordinal the preview should start rendering at. Runs before
+// the render pass so the preview can begin at the block enclosing the anchor instead of
+// mid-paragraph. Leaves previewStartOrdinal at 0 on any failure, which falls back to matching the
+// anchor id, i.e. the behaviour before block resolution existed.
+void ChapterHtmlSlimParser::locatePreviewBlockStart() {
+  PreviewBlockLocator locator(previewAnchor.c_str(), isHeaderOrBlock);
+  if (!locator.ok()) {
+    LOG_ERR("EHP", "Couldn't create parser to locate preview block");
+    return;
+  }
+
+  // Heap rather than stack: PARSE_BUFFER_SIZE is a quarter of the parsing task's stack. The buffer
+  // is released before the render pass opens the file, so the two never overlap.
+  auto buf = makeUniqueNoThrow<char[]>(PARSE_BUFFER_SIZE);
+  if (!buf) {
+    LOG_ERR("EHP", "Couldn't allocate buffer to locate preview block");
+    return;
+  }
+
+  FsFile file;
+  if (!Storage.openFileForRead("EHP", filepath, file)) {
+    return;
+  }
+
+  while (!locator.done()) {
+    const size_t len = file.read(buf.get(), PARSE_BUFFER_SIZE);
+    const bool isFinal = file.available() == 0;
+    if (len == 0 && !isFinal) {
+      LOG_ERR("EHP", "File read error while locating preview block");
+      break;
+    }
+    if (!locator.feed(buf.get(), static_cast<int>(len), isFinal) || isFinal) {
+      break;
+    }
+  }
+  file.close();
+
+  previewStartOrdinal = locator.startOrdinal();
+  if (previewStartOrdinal == 0) {
+    LOG_DBG("EHP", "No enclosing block located for preview anchor '%s'; starting at the anchor", previewAnchor.c_str());
+    return;
+  }
+  LOG_DBG("EHP", "Preview anchor '%s' resolves to block at element #%u", previewAnchor.c_str(), previewStartOrdinal);
+}
+
 bool ChapterHtmlSlimParser::handlePreviewScanStart(const XML_Char** atts) {
+  previewElementOrdinal += 1;
+  if (previewStartOrdinal != 0 && previewElementOrdinal == previewStartOrdinal) {
+    startPreviewAtAnchor();
+    return false;
+  }
+
+  // Fallback for when no block was located, and a safety net in case the two passes disagree on
+  // element ordinals: starting at the anchor is the pre-existing behaviour.
   const char* idValue = getAttribute(atts, "id");
   if (!idValue || strcmp(idValue, previewAnchor.c_str()) != 0) {
     depth += 1;
@@ -431,7 +514,6 @@ void ChapterHtmlSlimParser::startPreviewAtAnchor() {
                                                  : static_cast<CssTextAlign>(paragraphAlignment);
     startNewTextBlock(paragraphAlignmentBlockStyle);
   }
-  LOG_DBG("EHP", "Started preview at anchor '%s'", previewAnchor.c_str());
 }
 
 void ChapterHtmlSlimParser::stopPreviewIfPageLimitReached() {
@@ -443,7 +525,6 @@ void ChapterHtmlSlimParser::stopPreviewIfPageLimitReached() {
   if (activeParser) {
     XML_StopParser(activeParser, XML_TRUE);
   }
-  LOG_DBG("EHP", "Stopping preview after %u pages for anchor '%s'", previewMaxPages, previewAnchor.c_str());
 }
 
 void ChapterHtmlSlimParser::addPendingPublisherPageMarker(const char* label) {
@@ -555,10 +636,6 @@ void ChapterHtmlSlimParser::flushLongTextRunIfNeeded(const bool force) {
     return;
   }
 
-  LOG_DBG("EHP", "Text block flush: force=%u words=%u/%u bytes=%u/%u footnotes=%u/%u", force ? 1U : 0U,
-          static_cast<unsigned>(wordCount), static_cast<unsigned>(wordLimit),
-          static_cast<unsigned>(currentTextRunBytes), static_cast<unsigned>(byteLimit),
-          static_cast<unsigned>(pendingFootnotes.size()), static_cast<unsigned>(MAX_PENDING_FOOTNOTES_BEFORE_LAYOUT));
   const int horizontalInset = currentTextBlock->getBlockStyle().totalHorizontalInset();
   const uint16_t effectiveWidth =
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
@@ -733,13 +810,13 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
   currentPageNextY += topSpacing;
   attachPendingPublisherPageMarkers(currentPageNextY);
 
-  auto pageRule = std::shared_ptr<PageHorizontalRule>(
-      new (std::nothrow) PageHorizontalRule(width, ruleThickness, xPos, currentPageNextY));
+  auto pageRule = makeUniqueNoThrow<PageHorizontalRule>(width, ruleThickness, xPos, currentPageNextY);
   if (!pageRule) {
     LOG_ERR("EHP", "Failed to create PageHorizontalRule");
+    lowMemoryAbort = true;
     return;
   }
-  currentPage->elements.push_back(pageRule);
+  currentPage->elements.push_back(std::move(pageRule));
   markCurrentPageFromCurrentElement();
   currentPageNextY = static_cast<int16_t>(currentPageNextY + ruleThickness + bottomSpacing);
   headingOpenerActive = false;
@@ -981,9 +1058,15 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
         nextRowIndex++;
       }
 
-      currentPage->elements.push_back(
-          std::make_shared<PageTableFragment>(tableWidth, segment.columnCount, TABLE_CELL_PADDING, lineHeight,
-                                              std::move(fragmentRows), table.blockStyle.leftInset(), currentPageNextY));
+      auto fragment =
+          makeUniqueNoThrow<PageTableFragment>(tableWidth, segment.columnCount, TABLE_CELL_PADDING, lineHeight,
+                                               std::move(fragmentRows), table.blockStyle.leftInset(), currentPageNextY);
+      if (!fragment) {
+        LOG_ERR("EHP", "Failed to create PageTableFragment");
+        lowMemoryAbort = true;
+        return;
+      }
+      currentPage->elements.push_back(std::move(fragment));
       markCurrentPageFromCurrentElement();
       for (const auto& footnote : fragmentFootnotes) {
         currentPage->addFootnote(footnote.number, footnote.href);
@@ -1140,11 +1223,16 @@ bool ChapterHtmlSlimParser::appendMalformedMarkupWarningPage() {
     auto block =
         std::make_shared<TextBlock>(std::move(words), std::move(xPos), std::move(styles), std::vector<uint8_t>{},
                                     std::vector<uint16_t>{}, std::vector<uint16_t>{}, std::vector<uint8_t>{});
-    auto pageLine = std::make_shared<PageLine>(
+    auto pageLine = makeUniqueNoThrow<PageLine>(
         std::move(block),
         static_cast<int16_t>(
             std::max(0, (static_cast<int>(viewportWidth) - renderer.getTextWidth(fontId, line.c_str(), style)) / 2)),
         static_cast<int16_t>(yPos));
+    if (!pageLine) {
+      LOG_ERR("EHP", "Failed to create malformed-markup warning line");
+      lowMemoryAbort = true;
+      return false;
+    }
     currentPage->elements.push_back(std::move(pageLine));
     return true;
   };
@@ -1594,7 +1682,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
 
       if (!src.empty() && self->imageRendering != 1) {
-        LOG_DBG("EHP", "Found image: src=%s", src.c_str());
         const std::string resolvedPath = FsHelpers::normalisePath(FsHelpers::decodeUriEscapes(self->contentBase + src));
         if (isSvgImagePath(resolvedPath)) {
           LOG_DBG("EHP", "Skipping unsupported SVG image: %s", resolvedPath.c_str());
@@ -1613,8 +1700,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
           }
 
           const auto heapBeforeImage = MemoryBudget::snapshot();
-          LOG_DBG("EHP", "Heap before image extraction: free=%u maxAlloc=%u src=%s", heapBeforeImage.freeHeap,
-                  heapBeforeImage.maxAllocHeap, src.c_str());
 
           if (self->lowMemoryImageFallback) {
             self->skipCurrentElement();
@@ -1637,227 +1722,216 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               }
               std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
 
-              // Extract image to cache file
-              FsFile cachedImageFile;
-              bool extractSuccess = false;
-              if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
-                extractSuccess =
-                    self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, IMAGE_EXTRACT_CHUNK_SIZE);
-                cachedImageFile.flush();
-                cachedImageFile.close();
-              }
-
-              if (extractSuccess) {
-                LOG_DBG("EHP", "Heap after image extraction: free=%u maxAlloc=%u path=%s", ESP.getFreeHeap(),
-                        ESP.getMaxAllocHeap(), cachedImagePath.c_str());
-                // Retry dimension reads only if needed. This avoids a blanket per-image delay while still
-                // tolerating slow SD-card sync on the rare path where the first read is too early.
-                ImageDimensions dims = {0, 0};
+              // Read just enough compressed data to find dimensions. The full
+              // image remains inside the EPUB until its page is first rendered.
+              ImageDimensions dims = {0, 0};
+              ImageDimsProbe headerProbe;
+              bool gotDimensions =
+                  self->epub->readItemContentsToStream(resolvedPath, headerProbe, 1024, /*allowEarlyStop=*/true) &&
+                  headerProbe.getDimensions(dims);
+              std::string sourcePath;
+              if (gotDimensions) {
+                sourcePath = resolvedPath;
+              } else if (self->epub->extractItemToFile(resolvedPath, cachedImagePath)) {
+                // Unusual headers fall back to the existing full-file decoder.
+                // Retry only if needed to tolerate slow SD-card sync.
                 ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
-                bool gotDimensions = false;
                 for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
                   if (attempt > 0) {
                     delay(50);
                   }
                   gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
                 }
-                if (gotDimensions) {
-                  LOG_DBG("EHP", "Image dimensions: %dx%d", dims.width, dims.height);
+              }
 
-                  if (!MemoryBudget::hasHeapForEpubInlineImage("EHP", cachedImagePath.c_str())) {
-                    self->lowMemoryImageFallback = true;
-                    Storage.remove(cachedImagePath.c_str());
-                    self->skipCurrentElement();
-                    return;
-                  }
+              if (gotDimensions) {
+                if (!MemoryBudget::hasHeapForEpubInlineImage("EHP", cachedImagePath.c_str())) {
+                  self->lowMemoryImageFallback = true;
+                  Storage.remove(cachedImagePath.c_str());
+                  self->skipCurrentElement();
+                  return;
+                }
 
-                  int displayWidth = 0;
-                  int displayHeight = 0;
-                  const float emSize = static_cast<float>(self->renderer.getFontAscenderSize(self->fontId));
-                  CssStyle imgStyle;
-                  if (!self->isLightMode()) {
-                    imgStyle = self->cssParser
-                                   ? (self->usesSimpleCssLookup()
-                                          ? self->cssParser->resolveStyle("img", classAttr)
-                                          : self->cssParser->resolveStyle("img", classAttr, self->ancestorStack_))
-                                   : CssStyle{};
-                    // Merge inline style (e.g. style="height: 2em") so it overrides stylesheet rules
-                    if (!styleAttr.empty()) {
-                      imgStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
-                    }
+                int displayWidth = 0;
+                int displayHeight = 0;
+                const float emSize = static_cast<float>(self->renderer.getFontAscenderSize(self->fontId));
+                CssStyle imgStyle;
+                if (!self->isLightMode()) {
+                  imgStyle = self->cssParser
+                                 ? (self->usesSimpleCssLookup()
+                                        ? self->cssParser->resolveStyle("img", classAttr)
+                                        : self->cssParser->resolveStyle("img", classAttr, self->ancestorStack_))
+                                 : CssStyle{};
+                  // Merge inline style (e.g. style="height: 2em") so it overrides stylesheet rules
+                  if (!styleAttr.empty()) {
+                    imgStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
                   }
-                  const bool hasCssHeight = imgStyle.hasImageHeight();
-                  const bool hasCssWidth = imgStyle.hasImageWidth();
-                  int containerWidth = self->viewportWidth;
-                  if (self->currentTextBlock) {
-                    const int inset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
-                    if (inset > 0 && inset < self->viewportWidth) {
-                      containerWidth = self->viewportWidth - inset;
-                    }
+                }
+                const bool hasCssHeight = imgStyle.hasImageHeight();
+                const bool hasCssWidth = imgStyle.hasImageWidth();
+                int containerWidth = self->viewportWidth;
+                if (self->currentTextBlock) {
+                  const int inset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
+                  if (inset > 0 && inset < self->viewportWidth) {
+                    containerWidth = self->viewportWidth - inset;
                   }
+                }
 
-                  if (hasCssHeight && hasCssWidth && dims.width > 0 && dims.height > 0) {
-                    // Both CSS height and width set: resolve both, then clamp to viewport preserving requested ratio
-                    displayHeight = static_cast<int>(
-                        imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
-                    displayWidth = static_cast<int>(
-                        imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
-                    if (displayHeight < 1) displayHeight = 1;
+                if (hasCssHeight && hasCssWidth && dims.width > 0 && dims.height > 0) {
+                  // Both CSS height and width set: resolve both, then clamp to viewport preserving requested ratio
+                  displayHeight = static_cast<int>(
+                      imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
+                  displayWidth =
+                      static_cast<int>(imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
+                  if (displayHeight < 1) displayHeight = 1;
+                  if (displayWidth < 1) displayWidth = 1;
+                  if (displayWidth > containerWidth || displayHeight > self->viewportHeight) {
+                    float scaleX =
+                        (displayWidth > containerWidth) ? static_cast<float>(containerWidth) / displayWidth : 1.0f;
+                    float scaleY = (displayHeight > self->viewportHeight)
+                                       ? static_cast<float>(self->viewportHeight) / displayHeight
+                                       : 1.0f;
+                    float scale = (scaleX < scaleY) ? scaleX : scaleY;
+                    displayWidth = static_cast<int>(displayWidth * scale + 0.5f);
+                    displayHeight = static_cast<int>(displayHeight * scale + 0.5f);
                     if (displayWidth < 1) displayWidth = 1;
-                    if (displayWidth > containerWidth || displayHeight > self->viewportHeight) {
-                      float scaleX =
-                          (displayWidth > containerWidth) ? static_cast<float>(containerWidth) / displayWidth : 1.0f;
-                      float scaleY = (displayHeight > self->viewportHeight)
-                                         ? static_cast<float>(self->viewportHeight) / displayHeight
-                                         : 1.0f;
-                      float scale = (scaleX < scaleY) ? scaleX : scaleY;
-                      displayWidth = static_cast<int>(displayWidth * scale + 0.5f);
-                      displayHeight = static_cast<int>(displayHeight * scale + 0.5f);
-                      if (displayWidth < 1) displayWidth = 1;
-                      if (displayHeight < 1) displayHeight = 1;
-                    }
-                    LOG_DBG("EHP", "Display size from CSS height+width: %dx%d", displayWidth, displayHeight);
-                  } else if (hasCssHeight && !hasCssWidth && dims.width > 0 && dims.height > 0) {
-                    // Use CSS height (resolve % against viewport height) and derive width from aspect ratio
-                    displayHeight = static_cast<int>(
-                        imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
                     if (displayHeight < 1) displayHeight = 1;
+                  }
+                } else if (hasCssHeight && !hasCssWidth && dims.width > 0 && dims.height > 0) {
+                  // Use CSS height (resolve % against viewport height) and derive width from aspect ratio
+                  displayHeight = static_cast<int>(
+                      imgStyle.imageHeight.toPixels(emSize, static_cast<float>(self->viewportHeight)) + 0.5f);
+                  if (displayHeight < 1) displayHeight = 1;
+                  displayWidth =
+                      static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                  if (displayHeight > self->viewportHeight) {
+                    displayHeight = self->viewportHeight;
+                    // Rescale width to preserve aspect ratio when height is clamped
                     displayWidth =
                         static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
-                    if (displayHeight > self->viewportHeight) {
-                      displayHeight = self->viewportHeight;
-                      // Rescale width to preserve aspect ratio when height is clamped
-                      displayWidth =
-                          static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
-                      if (displayWidth < 1) displayWidth = 1;
-                    }
-                    if (displayWidth > containerWidth) {
-                      displayWidth = containerWidth;
-                      // Rescale height to preserve aspect ratio when width is clamped
-                      displayHeight =
-                          static_cast<int>(displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
-                      if (displayHeight < 1) displayHeight = 1;
-                    }
                     if (displayWidth < 1) displayWidth = 1;
-                    LOG_DBG("EHP", "Display size from CSS height: %dx%d", displayWidth, displayHeight);
-                  } else if (hasCssWidth && !hasCssHeight && dims.width > 0 && dims.height > 0) {
-                    // Use CSS width (resolve % against container width) and derive height from aspect ratio
-                    displayWidth = static_cast<int>(
-                        imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
-                    if (displayWidth > containerWidth) displayWidth = containerWidth;
-                    if (displayWidth < 1) displayWidth = 1;
+                  }
+                  if (displayWidth > containerWidth) {
+                    displayWidth = containerWidth;
+                    // Rescale height to preserve aspect ratio when width is clamped
                     displayHeight =
                         static_cast<int>(displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
-                    if (displayHeight > self->viewportHeight) {
-                      displayHeight = self->viewportHeight;
-                      // Rescale width to preserve aspect ratio when height is clamped
-                      displayWidth =
-                          static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
-                      if (displayWidth < 1) displayWidth = 1;
-                    }
                     if (displayHeight < 1) displayHeight = 1;
-                    LOG_DBG("EHP", "Display size from CSS width: %dx%d", displayWidth, displayHeight);
-                  } else {
-                    // Scale to fit container while preserving aspect ratio
-                    int maxWidth = containerWidth;
-                    int maxHeight = self->viewportHeight;
-                    float scaleX = (dims.width > maxWidth) ? (float)maxWidth / dims.width : 1.0f;
-                    float scaleY = (dims.height > maxHeight) ? (float)maxHeight / dims.height : 1.0f;
-                    float scale = (scaleX < scaleY) ? scaleX : scaleY;
-                    if (scale > 1.0f) scale = 1.0f;
-
-                    displayWidth = (int)(dims.width * scale);
-                    displayHeight = (int)(dims.height * scale);
-                    LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
                   }
-
-                  // Flush any pending text block so it appears before the image
-                  if (self->partWordBufferIndex > 0) {
-                    self->flushPartWordBuffer();
+                  if (displayWidth < 1) displayWidth = 1;
+                } else if (hasCssWidth && !hasCssHeight && dims.width > 0 && dims.height > 0) {
+                  // Use CSS width (resolve % against container width) and derive height from aspect ratio
+                  displayWidth =
+                      static_cast<int>(imgStyle.imageWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
+                  if (displayWidth > containerWidth) displayWidth = containerWidth;
+                  if (displayWidth < 1) displayWidth = 1;
+                  displayHeight =
+                      static_cast<int>(displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
+                  if (displayHeight > self->viewportHeight) {
+                    displayHeight = self->viewportHeight;
+                    // Rescale width to preserve aspect ratio when height is clamped
+                    displayWidth =
+                        static_cast<int>(displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                    if (displayWidth < 1) displayWidth = 1;
                   }
-                  bool openerNumberPrecededImage = false;
-                  if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
-                    const BlockStyle parentBlockStyle = self->currentTextBlock->getBlockStyle();
-                    self->startNewTextBlock(parentBlockStyle);
-                    // The block synthesized above copies the heading style. Inside a chapter opener that
-                    // style still carries the heading's drop margin (the large gap that pushes "Chapter N"
-                    // down the page), which was already spent positioning the number. Remember that so it
-                    // is not re-applied a second time as the ornament's top gap.
-                    openerNumberPrecededImage = self->headingOpenerActive;
-                  }
-
-                  int16_t imageMarginTop = 0;
-                  int16_t imageMarginBottom = 0;
-                  if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
-                    const auto& bs = self->currentTextBlock->getBlockStyle();
-                    imageMarginTop = openerNumberPrecededImage ? 0 : bs.topInset();
-                    if (self->blockStyleCount_ > 1) {
-                      imageMarginBottom = self->blockStyleBuf_[self->blockStyleCount_ - 1].bottomInset();
-                    }
-                  }
-
-                  // Keep a chapter number with its first ornament, but let later heading images continue on the
-                  // next page instead of overflowing the viewport (including the reserved status-bar area).
-                  const bool keepFirstOpenerImageWithHeading =
-                      self->headingOpenerActive && (!self->currentPage || !self->currentPage->hasImages());
-                  if (!keepFirstOpenerImageWithHeading && self->currentPage && !self->currentPage->elements.empty() &&
-                      (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
-                       self->viewportHeight)) {
-                    self->completeCurrentPage();
-                    self->completedPageCount++;
-                    self->stopPreviewIfPageLimitReached();
-                    if (self->previewStopRequested) {
-                      return;
-                    }
-                    if (!self->startNewPage("image page break")) {
-                      return;
-                    }
-                  } else if (!self->currentPage) {
-                    if (!self->startNewPage("image page")) {
-                      return;
-                    }
-                  }
-
-                  self->currentPageNextY += imageMarginTop;
-                  self->attachPendingPublisherPageMarkers(self->currentPageNextY);
-
-                  // Create ImageBlock and add to page
-                  auto imageBlock = std::shared_ptr<ImageBlock>(
-                      new (std::nothrow) ImageBlock(cachedImagePath, displayWidth, displayHeight));
-                  if (!imageBlock) {
-                    LOG_ERR("EHP", "Failed to create ImageBlock");
-                    return;
-                  }
-                  int xPos = (self->viewportWidth - displayWidth) / 2;
-                  auto pageImage = std::shared_ptr<PageImage>(new (std::nothrow)
-                                                                  PageImage(imageBlock, xPos, self->currentPageNextY));
-                  if (!pageImage) {
-                    LOG_ERR("EHP", "Failed to create PageImage");
-                    return;
-                  }
-                  self->currentPage->elements.push_back(pageImage);
-                  self->markCurrentPageFromCurrentElement();
-                  self->currentPageNextY += displayHeight + imageMarginBottom;
-
-                  if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
-                    BlockStyle afterImageStyle = self->blockStyleBuf_[self->blockStyleCount_ - 1].withoutBottom();
-                    if (self->headingOpenerActive) {
-                      // The title run trailing the ornament copies the heading style too and would inherit
-                      // the same drop margin, stacking a second heading-sized gap under the image. Replace
-                      // it with a modest half-line gap so the title sits just below the ornament instead.
-                      afterImageStyle.marginTop = static_cast<int16_t>(self->effectiveLineHeight() / 2);
-                      afterImageStyle.paddingTop = 0;
-                    }
-                    self->currentTextBlock->setBlockStyle(afterImageStyle);
-                  }
-
-                  self->pushCssAncestor(self->depth, name, classAttr);
-                  self->depth += 1;
-                  return;
+                  if (displayHeight < 1) displayHeight = 1;
                 } else {
-                  LOG_ERR("EHP", "Failed to get image dimensions");
-                  Storage.remove(cachedImagePath.c_str());
+                  // Scale to fit container while preserving aspect ratio
+                  int maxWidth = containerWidth;
+                  int maxHeight = self->viewportHeight;
+                  float scaleX = (dims.width > maxWidth) ? (float)maxWidth / dims.width : 1.0f;
+                  float scaleY = (dims.height > maxHeight) ? (float)maxHeight / dims.height : 1.0f;
+                  float scale = (scaleX < scaleY) ? scaleX : scaleY;
+                  if (scale > 1.0f) scale = 1.0f;
+
+                  displayWidth = (int)(dims.width * scale);
+                  displayHeight = (int)(dims.height * scale);
                 }
+
+                // Flush any pending text block so it appears before the image
+                if (self->partWordBufferIndex > 0) {
+                  self->flushPartWordBuffer();
+                }
+                bool openerNumberPrecededImage = false;
+                if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+                  const BlockStyle parentBlockStyle = self->currentTextBlock->getBlockStyle();
+                  self->startNewTextBlock(parentBlockStyle);
+                  // The block synthesized above copies the heading style. Inside a chapter opener that
+                  // style still carries the heading's drop margin (the large gap that pushes "Chapter N"
+                  // down the page), which was already spent positioning the number. Remember that so it
+                  // is not re-applied a second time as the ornament's top gap.
+                  openerNumberPrecededImage = self->headingOpenerActive;
+                }
+
+                int16_t imageMarginTop = 0;
+                int16_t imageMarginBottom = 0;
+                if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
+                  const auto& bs = self->currentTextBlock->getBlockStyle();
+                  imageMarginTop = openerNumberPrecededImage ? 0 : bs.topInset();
+                  if (self->blockStyleCount_ > 1) {
+                    imageMarginBottom = self->blockStyleBuf_[self->blockStyleCount_ - 1].bottomInset();
+                  }
+                }
+
+                // Keep a chapter number with its first ornament, but let later heading images continue on the
+                // next page instead of overflowing the viewport (including the reserved status-bar area).
+                const bool keepFirstOpenerImageWithHeading =
+                    self->headingOpenerActive && (!self->currentPage || !self->currentPage->hasImages());
+                if (!keepFirstOpenerImageWithHeading && self->currentPage && !self->currentPage->elements.empty() &&
+                    (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
+                     self->viewportHeight)) {
+                  self->completeCurrentPage();
+                  self->completedPageCount++;
+                  self->stopPreviewIfPageLimitReached();
+                  if (self->previewStopRequested) {
+                    return;
+                  }
+                  if (!self->startNewPage("image page break")) {
+                    return;
+                  }
+                } else if (!self->currentPage) {
+                  if (!self->startNewPage("image page")) {
+                    return;
+                  }
+                }
+
+                self->currentPageNextY += imageMarginTop;
+                self->attachPendingPublisherPageMarkers(self->currentPageNextY);
+
+                // Create ImageBlock and add to page
+                auto imageBlock = makeUniqueNoThrow<ImageBlock>(std::move(cachedImagePath), std::move(sourcePath),
+                                                                displayWidth, displayHeight);
+                if (!imageBlock) {
+                  LOG_ERR("EHP", "Failed to create ImageBlock");
+                  self->lowMemoryAbort = true;
+                  return;
+                }
+                int xPos = (self->viewportWidth - displayWidth) / 2;
+                auto pageImage = makeUniqueNoThrow<PageImage>(std::move(imageBlock), xPos, self->currentPageNextY);
+                if (!pageImage) {
+                  LOG_ERR("EHP", "Failed to create PageImage");
+                  self->lowMemoryAbort = true;
+                  return;
+                }
+                self->currentPage->elements.push_back(std::move(pageImage));
+                self->markCurrentPageFromCurrentElement();
+                self->currentPageNextY += displayHeight + imageMarginBottom;
+
+                if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
+                  BlockStyle afterImageStyle = self->blockStyleBuf_[self->blockStyleCount_ - 1].withoutBottom();
+                  if (self->headingOpenerActive) {
+                    // The title run trailing the ornament copies the heading style too and would inherit
+                    // the same drop margin, stacking a second heading-sized gap under the image. Replace
+                    // it with a modest half-line gap so the title sits just below the ornament instead.
+                    afterImageStyle.marginTop = static_cast<int16_t>(self->effectiveLineHeight() / 2);
+                    afterImageStyle.paddingTop = 0;
+                  }
+                  self->currentTextBlock->setBlockStyle(afterImageStyle);
+                }
+
+                self->pushCssAncestor(self->depth, name, classAttr);
+                self->depth += 1;
+                return;
               } else {
                 Storage.remove(cachedImagePath.c_str());
                 const uint32_t postFailureFreeHeap = ESP.getFreeHeap();
@@ -1868,7 +1942,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   LOG_ERR("EHP", "Disabling remaining image extraction after failure (%u free, %u max alloc)",
                           postFailureFreeHeap, postFailureMaxAllocHeap);
                 }
-                LOG_ERR("EHP", "Failed to extract image");
+                LOG_ERR("EHP", "Failed to get image dimensions");
               }
             }  // isFormatSupported
           }
@@ -1893,6 +1967,25 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->skipCurrentElement();
       return;
     }
+  }
+
+  // Ruby tag handling
+  if (strcmp(name, "ruby") == 0) {
+    self->flushPartWordBuffer();
+    self->inRuby = true;
+    self->rubyStartWordIndex = self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0;
+    if (self->currentTextBlock) {
+      self->currentTextBlock->ensureRubyCapacity();
+    }
+    self->rubyTextBuffer.clear();
+    self->depth += 1;
+    return;
+  }
+  if (strcmp(name, "rt") == 0) {
+    self->flushPartWordBuffer();
+    self->collectingRubyText = true;
+    self->depth += 1;
+    return;
   }
 
   if (matches(name, SKIP_TAGS, std::size(SKIP_TAGS))) {
@@ -2323,6 +2416,12 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     return;
   }
 
+  // Collect ruby text instead of normal word processing
+  if (self->collectingRubyText) {
+    self->rubyTextBuffer.append(s, len);
+    return;
+  }
+
   // Collect footnote link display text (for the number label)
   // Skip whitespace and brackets to normalize noterefs like "[1]" → "1"
   if (self->insideFootnoteLink) {
@@ -2517,6 +2616,41 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     return;
   }
 
+  // Ruby text: </rt> distributes ruby to base words, </ruby> resets ruby state
+  if (strcmp(name, "rt") == 0) {
+    self->collectingRubyText = false;
+    if (self->inRuby && self->currentTextBlock) {
+      const int currentWordCount = static_cast<int>(self->currentTextBlock->size());
+      const int baseWordCount = currentWordCount - self->rubyStartWordIndex;
+      std::string cleanRuby = trimAndNormalize(self->rubyTextBuffer);
+      if (!cleanRuby.empty()) {
+        if (baseWordCount > 0) {
+          self->currentTextBlock->setRubyGroupAt(self->rubyStartWordIndex, baseWordCount, cleanRuby);
+          self->rubyStartWordIndex = currentWordCount;
+        } else if (self->rubyStartWordIndex > 0) {
+          int leaderIdx = self->rubyStartWordIndex - 1;
+          while (leaderIdx >= 0 &&
+                 (self->currentTextBlock->getWordStyleAt(leaderIdx) & EpdFontFamily::RUBY_CONTINUE) != 0) {
+            leaderIdx--;
+          }
+          if (leaderIdx >= 0) {
+            std::string prevRuby = self->currentTextBlock->getRubyTextAt(leaderIdx);
+            self->currentTextBlock->setRubyForWordAt(leaderIdx, prevRuby + cleanRuby);
+          }
+        }
+      }
+    }
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
+  if (strcmp(name, "ruby") == 0 && self->inRuby) {
+    self->inRuby = false;
+    self->rubyStartWordIndex = -1;
+    self->rubyTextBuffer.clear();
+    self->depth -= 1;
+    return;
+  }
   // Check if any style state will change after we decrement depth
   // If so, we MUST flush the partWordBuffer with the CURRENT style first
   // Note: depth hasn't been decremented yet, so we check against (depth - 1)
@@ -2803,6 +2937,10 @@ bool ChapterHtmlSlimParser::beginParse() {
   malformedMarkupTruncated = false;
   parseFileOffset_ = 0;
   parseFileSize_ = 0;
+  // Runs before the render pass opens the file, so only one reader is ever open at a time.
+  if (isPreviewBuild()) {
+    locatePreviewBlockStart();
+  }
   // Initialize block style stack with a root entry representing "no ancestor block elements".
   // The user's paragraph alignment is set as the default so child elements without explicit
   // text-align inherit it correctly through getCombinedBlockStyle.
@@ -3005,7 +3143,6 @@ bool ChapterHtmlSlimParser::finishParse() {
     return false;
   }
 
-  LOG_DBG("EHP", "Parse arena used %u bytes", (unsigned)parseArena_.used());
   parseArena_.release();
   inlineStyleBuf_ = nullptr;
   blockStyleBuf_ = nullptr;
@@ -3035,7 +3172,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
     return;
   }
 
-  const int lineHeight = effectiveLineHeight();
+  const int lineHeight = effectiveLineHeight() + line->getRubyShift(renderer.getFontAscenderSize(fontId));
 
   if (!currentPage) {
     if (!startNewPage("line layout")) {
@@ -3067,7 +3204,13 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
 
   // Apply horizontal left inset (margin + padding) as x position offset
   const int16_t xOffset = line->getBlockStyle().leftInset();
-  currentPage->elements.push_back(std::make_shared<PageLine>(line, xOffset, currentPageNextY));
+  auto pageLine = makeUniqueNoThrow<PageLine>(line, xOffset, currentPageNextY);
+  if (!pageLine) {
+    LOG_ERR("EHP", "Failed to create PageLine");
+    lowMemoryAbort = true;
+    return;
+  }
+  currentPage->elements.push_back(std::move(pageLine));
   markCurrentPageFromCurrentTextBlock();
   currentPageNextY += lineHeight;
 }

@@ -29,9 +29,9 @@ namespace {
 
 constexpr char latestReleaseUrl[] = CROSSINK_OTA_RELEASE_URL;
 
-#ifdef CROSSPOINT_FIRMWARE_VARIANT
-constexpr char firmwareAssetStem[] = "firmware-" CROSSPOINT_FIRMWARE_VARIANT;
-constexpr char firmwareAssetName[] = "firmware-" CROSSPOINT_FIRMWARE_VARIANT ".bin";
+#ifdef CROSSINK_FIRMWARE_DEVICE_TYPE
+constexpr char firmwareAssetStem[] = "firmware-" CROSSINK_FIRMWARE_DEVICE_TYPE;
+constexpr char firmwareAssetName[] = "firmware-" CROSSINK_FIRMWARE_DEVICE_TYPE ".bin";
 #else
 constexpr char firmwareAssetStem[] = "firmware";
 constexpr char firmwareAssetName[] = "firmware.bin";
@@ -198,7 +198,6 @@ esp_err_t release_manifest_event_handler(esp_http_client_event_t* event) {
   }
 
   totalBytesReceived += static_cast<size_t>(event->data_len);
-  LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
   parser->feed(static_cast<const char*>(event->data), event->data_len);
   return ESP_OK;
 }

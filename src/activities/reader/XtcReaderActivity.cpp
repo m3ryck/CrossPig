@@ -106,11 +106,28 @@ void XtcReaderActivity::onExit() {
   xtc.reset();
 }
 
+void XtcReaderActivity::openReaderMenu() {
+  const bool hasChapters = xtc->hasChapters() && !xtc->getChapters().empty();
+  pauseReadingStatsTimer("reader_menu");
+  startActivityForResult(
+      std::make_unique<XtcReaderMenuActivity>(renderer, mappedInput, xtc->getTitle(), hasChapters, stats.isCompleted),
+      [this](const ActivityResult& result) {
+        const auto* menu = std::get_if<MenuResult>(&result.data);
+        if (result.isCancelled || menu == nullptr) {
+          resumeReadingStatsTimer("reader_menu_return");
+          requestUpdate();
+          return;
+        }
+        onReaderMenuConfirm(menu->action);
+      });
+}
+
 void XtcReaderActivity::loop() {
   if (!xtc) {
     return;
   }
 
+  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
   const bool atEndOfBook = currentPage >= xtc->getPageCount();
 
   // While the end screen suggestion menu is showing it owns Confirm/Back/navigation
@@ -138,20 +155,8 @@ void XtcReaderActivity::loop() {
     }
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const bool hasChapters = xtc->hasChapters() && !xtc->getChapters().empty();
-    pauseReadingStatsTimer("reader_menu");
-    startActivityForResult(
-        std::make_unique<XtcReaderMenuActivity>(renderer, mappedInput, xtc->getTitle(), hasChapters, stats.isCompleted),
-        [this](const ActivityResult& result) {
-          const auto* menu = std::get_if<MenuResult>(&result.data);
-          if (result.isCancelled || menu == nullptr) {
-            resumeReadingStatsTimer("reader_menu_return");
-            requestUpdate();
-            return;
-          }
-          onReaderMenuConfirm(menu->action);
-        });
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || ReaderUtils::isTouchMenuGesture(mappedInput)) {
+    openReaderMenu();
     return;
   }
 
@@ -172,7 +177,7 @@ void XtcReaderActivity::loop() {
   }
 
   // Short press BACK goes directly to home
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+  if (!touch.prev && !touch.next && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
     onGoHome();
     return;
@@ -293,8 +298,10 @@ void XtcReaderActivity::loop() {
 
   const bool fromSideBtn = (sidePrev || sideNext) && !(frontPrev || frontNext);
   const bool fromTilt = tiltPrev || tiltNext;
-  const bool prevTriggered = tiltPrev || sidePrev || frontPrev;
-  const bool nextTriggered = tiltNext || sideNext || frontNext;
+  bool prevTriggered = tiltPrev || sidePrev || frontPrev;
+  bool nextTriggered = tiltNext || sideNext || frontNext;
+  prevTriggered = prevTriggered || touch.prev;
+  nextTriggered = nextTriggered || touch.next;
 
   if (!prevTriggered && !nextTriggered) {
     return;
@@ -381,9 +388,6 @@ bool XtcReaderActivity::currentPageReadingSecondsForStats(uint32_t& seconds, con
 
   const uint32_t thresholdSeconds = SETTINGS.getReadingIdleTimeThresholdSeconds();
   if (elapsedSeconds > thresholdSeconds) {
-    LOG_DBG("XTR", "Reading time interval rejected as idle: source=%s seconds=%lu threshold=%lu",
-            source ? source : "unknown", static_cast<unsigned long>(elapsedSeconds),
-            static_cast<unsigned long>(thresholdSeconds));
     return false;
   }
 
@@ -612,7 +616,7 @@ void XtcReaderActivity::deleteBookStats() {
 void XtcReaderActivity::deleteBookCache() {
   startActivityForResult(
       std::make_unique<ConfirmationActivity>(renderer, mappedInput, confirmationHeading(StrId::STR_DELETE_CACHE),
-                                             xtc ? xtc->getTitle() : std::string{}),
+                                             xtc ? xtc->getTitle() : std::string{}, false, true),
       [this](const ActivityResult& result) {
         if (!result.isCancelled && xtc) {
           bool cacheDeleted = false;
@@ -653,6 +657,12 @@ void XtcReaderActivity::onReaderMenuConfirm(const int action) {
       break;
     case XtcReaderMenuActivity::MenuAction::DELETE_CACHE:
       deleteBookCache();
+      break;
+    case XtcReaderMenuActivity::MenuAction::SEND_NEARBY_BOOK:
+      saveProgress();
+      activityManager.goToNearbyBookSend(xtc ? xtc->getPath() : std::string{}, true);
+      return;
+    case XtcReaderMenuActivity::MenuAction::DISABLE_TOUCHSCREEN:
       break;
   }
 }
@@ -710,6 +720,7 @@ void XtcReaderActivity::render(RenderLock&&) {
 }
 
 XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
+  const auto statusBar = SETTINGS.statusBarSpec();
   const int bookPageCount = static_cast<int>(xtc->getPageCount());
   const int bookPage = static_cast<int>(currentPage) + 1;
   std::string title =
@@ -728,7 +739,7 @@ XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
     return StatusBarInfo{bookPage, bookPageCount, std::move(title)};
   }
 
-  if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
+  if (statusBar.titleMode == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
     title = chapterIt->name[0] == '\0' ? tr(STR_UNNAMED) : chapterIt->name;
   }
 
@@ -860,8 +871,6 @@ void XtcReaderActivity::renderPage() {
         pixelCounts[getPixelValue(x, y)]++;
       }
     }
-    LOG_DBG("XTR", "Pixel distribution: White=%lu, DarkGrey=%lu, LightGrey=%lu, Black=%lu", pixelCounts[0],
-            pixelCounts[1], pixelCounts[2], pixelCounts[3]);
 
     // Pass 1: BW buffer - draw all non-white pixels as black
     for (uint16_t y = 0; y < pageHeight; y++) {
@@ -929,7 +938,6 @@ void XtcReaderActivity::renderPage() {
 
     free(pageBuffer);
 
-    LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit grayscale)", currentPage + 1, xtc->getPageCount());
     return;
   } else {
     // 1-bit mode: 8 pixels per byte, MSB first
@@ -962,8 +970,6 @@ void XtcReaderActivity::renderPage() {
 
   // Display with appropriate refresh
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
-
-  LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", currentPage + 1, xtc->getPageCount(), bitDepth);
 }
 
 void XtcReaderActivity::saveProgress() const {
@@ -985,7 +991,6 @@ void XtcReaderActivity::loadProgress() {
     uint8_t data[4];
     if (f.read(data, 4) == 4) {
       currentPage = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-      LOG_DBG("XTR", "Loaded progress: page %lu", currentPage);
 
       // Validate page number
       if (currentPage >= xtc->getPageCount()) {

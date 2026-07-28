@@ -20,7 +20,6 @@ Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3).
 
 - Read `.claude/CONTEXT.md` at session start for durable repo-specific gotchas.
 - Keep `.claude/CONTEXT.md` short. Add only reusable findings, not turn-by-turn history.
-- If asked to summarize a session, create `.claude/CONTEXT-YYYY-MM-DD.md` with the relevant findings for that session.
 
 ## Repo Skills
 
@@ -106,7 +105,7 @@ Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3).
 - Host environment may be macOS, Linux, WSL, or Windows Git Bash. Check `uname -s` before recommending platform-specific shell commands.
 - Logging uses `LOG_INF`, `LOG_DBG`, and `LOG_ERR`.
 - The simulator env in this repo is `simulator`.
-- For simulator work, build from this firmware repo unless the change belongs in `crosspoint-simulator` itself.
+- For simulator work, build from this firmware repo unless the change belongs in `crossinkimulator` itself.
 - Common validation commands:
   - `pio run -e simulator` for simulator-facing UI/reader work.
   - `pio run -e default` for firmware compile validation.
@@ -134,7 +133,7 @@ Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3).
 - When resolving merge, rebase, or cherry-pick conflicts, inspect the relevant commit messages for upstream PR references such as `#2608`. Open the PR in its source repository and read its description and changed files before resolving the conflict so the intended behavior is understood.
 - Do not resolve conflicts by automatically keeping CrossInk's current implementation or by discarding the upstream change wholesale. Preserve or adapt the upstream intent unless it is already fully implemented, would introduce a regression, or would substantially and unjustifiably change CrossInk's UX or behavior. When rejecting an upstream change, state the concrete reason.
 - If a referenced PR cannot be accessed, inspect the source commit diff and nearby history, then report that the PR intent could not be verified instead of guessing.
-- Do not commit unless the user explicitly asks.
+- Do not commit unless the user explicitly asks or committing is part of the skill utilized.
 - Before staging, ensure ignored/generated/local files such as `.pio/`, `*.generated.h`, `compile_commands.json`, and `platformio.local.ini` are not included.
 - Branch names should use repo-style prefixes such as `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, or `chore/`.
 - Suggested commit messages should follow `<type>: <short summary>`, using types like `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, or `perf`.
@@ -153,6 +152,7 @@ When new features are added or issues are fixed, make sure to add an entry to `C
 - The release date of each version is displayed.
 
 ### Types of Changelog Changes
+
 - Added - for new features.
 - Changed - for changes in existing functionality.
 - Deprecated - for soon-to-be removed features.

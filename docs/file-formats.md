@@ -7,12 +7,13 @@ fixed-size char buffer.
 
 ## `book.bin`
 
-### Version 8
+### Version 10
 
 `book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
 The current firmware writes this version from `BookMetadataCache`.
-Version 8 stores book and TOC title strings NFC-composed so decomposed
-diacritics render correctly with device fonts.
+Version 10 stores book and TOC title strings NFC-composed so decomposed
+diacritics render correctly with device fonts. It also rebuilds metadata after
+the EPUB guide start-reference handling changed.
 
 ImHex pattern:
 
@@ -21,7 +22,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 8
+#define EXPECTED_VERSION 10
 #define MAX_STRING_LENGTH 65535
 
 struct String {
@@ -93,7 +94,7 @@ if (parsedSize != fileSize) {
 
 ## `reader_settings.bin`
 
-### Version 3
+### Version 4
 
 Each EPUB cache directory may contain `reader_settings.bin`. Missing files mean
 the book uses global Reader settings and the default auto-page-turn interval.
@@ -104,7 +105,8 @@ Version 1 stored only:
 - `u16 autoPageTurnSeconds`
 
 Version 2 stores flags before the full reader-settings snapshot. Version 3 adds
-the EPUB word-spacing level to that snapshot. This lets the
+the EPUB word-spacing level to that snapshot. Version 4 adds the EPUB indexing
+method (`0` = incremental, `1` = full section). This lets the
 file preserve an auto-page-turn interval without forcing custom font/layout
 settings for the book. It also stores a per-book EPUB render mode override,
 which can be changed from book action menus before opening the book so a
@@ -115,7 +117,7 @@ fallback successfully opens a difficult book.
 
 ```c++
 struct ReaderSettingsBin {
-    u8 version; // 3
+    u8 version; // 4
     u8 flags;   // bit 0 = custom reader settings, bit 1 = custom auto-page-turn interval, bit 2 = render mode override
     u16 autoPageTurnSeconds;
     u8 renderMode; // 0 = CrossInk Default, 1 = Balanced, 2 = Light
@@ -138,6 +140,7 @@ struct ReaderSettingsBin {
     u8 bionicReadingEnabled;
     u8 guideReadingEnabled;
     u8 snapshotRenderMode;
+    u8 indexingMethod; // 0 = incremental, 1 = full section
     char sdFontFamilyName[64];
 };
 ```
@@ -231,14 +234,20 @@ Binary layout:
 
 ## `section.bin`
 
-### Version 50
+### Version 54
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
 
-Version 52 keeps Guide Dots centered when extra word spacing is enabled. Version
-51 preserves continuation state for oversized CJK word fragments. Version 50
+Version 54 adds compact ruby-text annotations to serialized text blocks. Only
+words that begin a ruby group store annotation text; continuation words use a
+dedicated style bit. This keeps books without ruby markup unchanged apart from
+the cache version while avoiding an empty string allocation for every word.
+Version 53 stores each image's EPUB-internal source path so section indexing can
+read only its header and defer full extraction until the page is shown. Version
+52 keeps Guide Dots centered when extra word spacing is enabled. Version 51
+preserves continuation state for oversized CJK word fragments. Version 50
 paginates chapter-heading image runs within the reader viewport so they do not
 overflow into the reserved status-bar area. Version 49 stores Bionic Reading
 split-run offsets in visual order so RTL word prefixes render on the right.
@@ -280,7 +289,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 50
+#define EXPECTED_VERSION 54
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -371,6 +380,7 @@ struct TextBlock {
 
 struct ImageBlock {
     String imagePath;
+    String sourcePath;
     s16 width;
     s16 height;
 };

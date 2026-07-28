@@ -10,6 +10,52 @@ For focused reference material, see [Reader Features](./reader-features.md),
 [Controls](./controls.md), [SD Card Fonts](./sd-card-fonts.md),
 [File Transfer](./webserver.md), and [Troubleshooting](./troubleshooting.md).
 
+- [CrossInk User Guide](#CrossInk-user-guide)
+  - [1. Hardware Overview](#1-hardware-overview)
+    - [Button Layout](#button-layout)
+    - [Taking a Screenshot](#taking-a-screenshot)
+  - [2. Power \& Startup](#2-power--startup)
+    - [Power On / Off](#power-on--off)
+    - [First Launch](#first-launch)
+  - [3. Screens](#3-screens)
+    - [3.1 Home Screen](#31-home-screen)
+    - [3.2 Reading Mode](#32-reading-mode)
+    - [3.3 Browse Files Screen](#33-browse-files-screen)
+    - [3.4 Recent Books Screen](#34-recent-books-screen)
+    - [3.5 File Transfer Screen](#35-file-transfer-screen)
+    - [3.5.1 Calibre Wireless Transfers](#351-calibre-wireless-transfers)
+      - [Installing the Plugin in Calibre](#installing-the-plugin-in-calibre)
+      - [Configuring the CrossPoint Plugin in Calibre](#configuring-the-crosspoint-plugin-in-calibre)
+      - [Uploading Books](#uploading-books)
+      - [Removing a Book](#removing-a-book)
+    - [3.6 Settings](#36-settings)
+      - [3.6.1 Display](#361-display)
+      - [3.6.2 Reader](#362-reader)
+      - [3.6.3 Controls](#363-controls)
+      - [3.6.4 System](#364-system)
+      - [3.6.5 OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries)
+      - [3.6.6 Web Settings (Wi-Fi + OPDS)](#366-web-settings-wi-fi--opds)
+      - [3.6.7 KOReader Sync Quick Setup](#367-koreader-sync-quick-setup)
+        - [Option A: Free Public Server (`sync.koreader.rocks`)](#option-a-free-public-server-synckoreaderrocks)
+        - [Option B: Self-Hosted Server (Docker Compose)](#option-b-self-hosted-server-docker-compose)
+    - [3.7 Sleep Screen](#37-sleep-screen)
+      - [Cover settings](#cover-settings)
+      - [Custom images](#custom-images)
+    - [3.8 Custom Fonts (SD Card)](#38-custom-fonts-sd-card)
+  - [4. Reading Mode](#4-reading-mode)
+    - [Page Turning](#page-turning)
+    - [Chapter Navigation](#chapter-navigation)
+    - [Auto Page Turn](#auto-page-turn)
+    - [Tilt Page Turn (X3 and Sticky)](#tilt-page-turn-x3-and-sticky)
+    - [Footnote Navigation](#footnote-navigation)
+    - [System Navigation](#system-navigation)
+    - [Supported Languages](#supported-languages)
+  - [5. Reader Menu](#5-reader-menu)
+    - [5.1 Chapter Selection](#51-chapter-selection)
+    - [5.2 Bookmarks](#52-bookmarks)
+  - [6. Current Limitations & Roadmap](#6-current-limitations--roadmap)
+  - [7. Troubleshooting Issues & Escaping Bootloop](#7-troubleshooting-issues--escaping-bootloop)
+
 ## 1. Hardware Overview
 
 The device utilises the standard buttons on the Xteink X4 (in the same layout as the manufacturer firmware, by default):
@@ -74,7 +120,9 @@ The Recent Books screen lists the most recently opened books in a chronological 
 
 ### 3.5 File Transfer Screen
 
-The File Transfer screen allows you to upload and manage files on the device. When you enter the screen, choose **Join a Network**, **Calibre Wireless**, or **Create Hotspot**. The reader then starts the web server for the selected mode.
+The File Transfer screen allows you to upload and manage files on the device.
+Choose **Join a Network**, **Calibre Wireless**, or **Create Hotspot** to start
+the web server for the selected mode.
 
 See the [File Transfer guide](./webserver.md) for connection and upload details.
 
@@ -85,6 +133,11 @@ The web interface also supports **WebDAV**, allowing you to mount the device as 
 Download links for files already on the device are available in the web interface, so you can retrieve books or screenshots over Wi-Fi without connecting a cable.
 
 A **Wi-Fi signal strength indicator** (dBm) is displayed on-screen during joined-network web server sessions.
+
+The same screen also has **Receive Nearby File**, which receives a supported
+book or image directly from another nearby CrossInk reader without joining a
+Wi-Fi network. See [Nearby File Transfer](./nearby-file-transfer.md) for the
+complete sender and receiver workflow.
 
 > [!TIP]
 > Advanced users can manage files programmatically with the same HTTP endpoints
@@ -170,12 +223,14 @@ device model and build.
   - "Lexend Deca" (default)
   - "Bitter"
 
-- **Reader Font Size**: Adjust the text size for reading. The `tiny` release
-  build includes 10, 12, 14, and 16 pt; `xlarge` includes 16, 18, and 20 pt.
+- **Reader Font Size**: Adjust the text size for reading, built-in font sizes include: 10, 12, 14, and 16 pt.
 
 - **Reader Line Spacing**: Adjust the line height as a percentage.
 
-- **Word Spacing**: Add one of four wider spacing levels between words.
+- **Word Spacing**: In EPUB books, choose **Normal** or one of four wider
+  spacing levels between words. Open the reader menu, then select **Reader
+  Options > Font Options > Word Spacing**. Changing it reflows the current
+  book, so page positions may change; it is not available for TXT books.
 
 - **Reader Screen Margin**: Controls the screen margins in Reading Mode between 5 and 40 pixels in 5-pixel increments.
 
@@ -189,7 +244,7 @@ device model and build.
 - **Reading Orientation**: Set the screen orientation for reading EPUB files:
   - "Portrait" (default) - Standard portrait orientation
   - "Landscape CW" - Landscape, rotated clockwise
-  - "Inverted" - Portrait, upside down
+  - "Portrait 180" - Portrait, upside down
   - "Landscape CCW" - Landscape, rotated counter-clockwise
 
 - **Extra Paragraph Spacing**: Set how to handle paragraph breaks:
@@ -200,7 +255,7 @@ device model and build.
   **Guide Dots** are directly available from the Reader settings. See
   [Reader Features](./reader-features.md) for their behavior.
 
-- **Customise Status Bar**: Configure the status bar displayed while reading:
+- **Customize Status Bar**: Configure the status bar displayed while reading:
   - Chapter Page Count - Show/Hide the current page in the chapter (ex: 5/25). Page count may change based on the font size and margins set.
   - Book Progress Percentage - Show/Hide the current percent progress in the book.
   - Progress Bar - Show/Hide a progress bar for either the book or chapter.
@@ -317,7 +372,6 @@ It also interoperates with KOReader apps/devices when they use the same server a
 When **Sync Server URL** is left empty, CrossInk uses the free CrossPoint sync server at `https://sync.crosspointreader.com`. It speaks the standard KOReader sync protocol (so KOReader apps can use it too) and additionally stores an exact spine/page position for lossless CrossInk-to-CrossInk sync.
 
 1. On each CrossInk device:
-
    - Go to **Settings -> System -> KOReader Sync**.
 
    - Set **Username** and **Password** (enter the plain password; CrossInk computes MD5 internally, and use the same values on all devices).
@@ -333,7 +387,6 @@ Accounts are per server. Existing `sync.koreader.rocks` credentials do not exist
 Use this if you already sync KOReader devices against the official public server.
 
 1. On each CrossInk device:
-
    - Go to **Settings -> System -> KOReader Sync**.
 
    - Set **Sync Server URL** to `https://sync.koreader.rocks` (required; an empty URL now points at the CrossPoint server instead).
@@ -519,9 +572,9 @@ This feature can be disabled in **Settings > Controls > Front Buttons** to help 
 
 Auto Page Turn automatically advances pages at a set interval, useful for hands-free reading. This feature can be enabled and configured from the **[Reader Menu](#5-reader-menu)** while reading an EPUB.
 
-### Tilt Page Turn (X3 only)
+### Tilt Page Turn (X3 and Sticky)
 
-On the **Xteink X3**, the gyroscope can be used to turn pages by tilting the device. This feature is available in **Settings -> Controls**.
+On the **Xteink X3** and **Sticky**, the gyroscope can be used to turn pages by tilting the device. This feature and its left-right or forward-back direction are available in **Settings -> Controls**.
 
 ### Footnote Navigation
 
@@ -568,6 +621,8 @@ Available options include:
 - **Sync Progress** – Push or pull reading progress with a KOReader sync server (see [KOReader Sync Quick Setup](#367-koreader-sync-quick-setup)).
 - **Reading Stats** – Open the current book's reading stats.
 - **Mark Finished / Mark Unfinished** – Toggle whether the current book is marked as finished.
+- **Look Up Word / Lookup History** – Select words on the page and revisit recent per-book lookups when a dictionary is active.
+- **Book Dictionary** – Choose a per-book dictionary override from the reader menu's settings tab.
 
 Press **Back** at any time to close the menu and return to your current page.
 
@@ -591,6 +646,10 @@ To open bookmarks, press **Confirm** while inside a book. Then navigate to the *
 
 Bookmarks are stored as per-book `.bin` files in the `.crosspoint/bookmarks` folder.
 
+### 5.3 Dictionary
+
+Dictionary lookup supports word selection, recent per-book history, chained lookups from definitions, and per-book dictionary overrides. See the [Dictionary guide](./docs/dictionary.md) for installation and preparation instructions.
+
 ## 6. Current Limitations & Roadmap
 
 Please note that this firmware is currently in active development. The following features are **not yet supported** but are planned for future updates:
@@ -600,7 +659,6 @@ Please note that this firmware is currently in active development. The following
   built-in [EPUB optimization](./webserver.md#epub-optimization) before upload
   if a book is slow or memory-sensitive.
 - **Unsupported Image Formats:** Most JPG and PNG images in EPUBs render correctly. GIFs and progressive JPEGs are not supported and will fall back to an `[Image]` placeholder.
-- **Dictionary Lookup:** Inline word lookup is not yet implemented.
 
 ---
 

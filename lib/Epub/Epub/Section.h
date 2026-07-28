@@ -6,6 +6,7 @@
 
 #include "Epub.h"
 #include "EpubRenderMode.h"
+#include "ReaderRenderSpec.h"
 
 class Page;
 class GfxRenderer;
@@ -68,11 +69,7 @@ class Section {
   uint32_t partialTotalBytes_ = 0;
   std::string activeBuildTmpSectionPath_;
 
-  bool writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
-                              uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
-                              bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering,
-                              bool bionicReadingEnabled, bool guideReadingEnabled, uint8_t wordSpacing,
-                              EpubRenderMode renderMode);
+  bool writeSectionFileHeader(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
   bool ensureBuildFileOpen();
   bool finalizeBuild();
@@ -94,24 +91,14 @@ class Section {
   explicit Section(const std::shared_ptr<Epub>& epub, int spineIndex, GfxRenderer& renderer,
                    const char* cacheSuffix = "");
   ~Section();
-  bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
-                       uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
-                       bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering, bool bionicReadingEnabled,
-                       bool guideReadingEnabled, uint8_t wordSpacing, EpubRenderMode renderMode);
+  bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
-  bool createSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
-                         uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
-                         bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering, bool bionicReadingEnabled,
-                         bool guideReadingEnabled, uint8_t wordSpacing, const std::function<void()>& popupFn = nullptr,
+  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
                          bool* imagesWereSuppressed = nullptr, bool* layoutAbortedForLowMemory = nullptr,
-                         EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault,
                          SectionBuildOptions buildOptions = {});
 
-  bool startBuild(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
-                  uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
-                  bool embeddedStyle, uint8_t imageRendering, bool bionicReadingEnabled, bool guideReadingEnabled,
-                  uint8_t wordSpacing, EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault,
-                  SectionBuildOptions buildOptions = {});
+  bool startBuild(const ReaderRenderSpec& spec, SectionBuildOptions buildOptions = {},
+                  const std::function<void()>& popupFn = nullptr);
   bool buildSomeMore(int maxPages);
   void releaseBuildFile();
   bool lastBuildImagesWereSuppressed() const { return lastImagesWereSuppressed_; }
@@ -160,7 +147,11 @@ class Section {
   std::optional<uint16_t> getCachedPageCount() const;
 
   // Look up the page number for a synthetic paragraph index from XPath p[N].
+  // Checks the active incremental build before falling back to the committed cache.
   std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex) const;
+
+  // Look up a synthetic paragraph among pages produced by the active build only.
+  std::optional<uint16_t> findParagraphDuringBuild(uint16_t pIndex) const;
 
   // Look up the page number for a running list-item index from the li LUT.
   std::optional<uint16_t> getPageForListItemIndex(uint16_t liIndex) const;

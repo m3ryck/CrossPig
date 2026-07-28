@@ -5,8 +5,6 @@
 #include <I18n.h>
 #include <Memory.h>
 
-#include <optional>
-
 #include "CrossPointSettings.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
@@ -41,6 +39,13 @@ bool ReaderActivity::shouldShowLoadingPopup(const std::string& path) {
   return !Epub::hasCache(path, "/.crosspoint");
 }
 
+int ReaderActivity::initialRefreshCountdown() const {
+  if (!allowFastInitialRefresh) return 0;
+
+  const int refreshFrequency = SETTINGS.getRefreshFrequency();
+  return refreshFrequency > 1 ? refreshFrequency : 2;
+}
+
 std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
@@ -57,17 +62,16 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   // construction, so this check is valid before load(); a cached open loads in a blink -> no popup.
   const bool uncached = !Storage.exists((epub->getCachePath() + "/book.bin").c_str());
   if (uncached) {
+    // The popup replaces the restored Quick Resume frame, so the reader must clean it.
+    allowFastInitialRefresh = false;
     GUI.drawPopup(renderer, tr(STR_INDEXING));
   }
-  bool loaded;
-  {
-    // Lend the framebuffer's 48 KB to the container parse (expat + spine/TOC
-    // build). The popup just displayed stays on the panel; whichever reader
-    // activity follows redraws the full screen anyway.
-    std::optional<GfxRenderer::FrameBufferLoan> loan;
-    if (uncached) loan.emplace(renderer);
-    loaded = epub->load(true, SETTINGS.embeddedStyle == 0);
-  }
+  // Lend the framebuffer's 48 KB for every EPUB load: even a cached book may
+  // rebuild stale/missing CSS and need miniz's ~43 KB streaming workspace. The
+  // panel keeps showing its last image, and the next activity redraws fully.
+  GfxRenderer::FrameBufferLoan loan(renderer);
+  const bool loaded = epub->load(true, SETTINGS.embeddedStyle == 0);
+  loan.end();
   if (loaded) {
     return epub;
   }
@@ -123,7 +127,8 @@ void ReaderActivity::goToLibrary(const std::string& fromBookPath) {
 void ReaderActivity::onGoToEpubReader(std::unique_ptr<Epub> epub) {
   const auto epubPath = epub->getPath();
   currentBookPath = epubPath;
-  activityManager.replaceActivity(std::make_unique<EpubReaderActivity>(renderer, mappedInput, std::move(epub)));
+  activityManager.replaceActivity(
+      std::make_unique<EpubReaderActivity>(renderer, mappedInput, std::move(epub), initialRefreshCountdown()));
 }
 
 void ReaderActivity::onGoToBmpViewer(const std::string& path) {
@@ -133,13 +138,15 @@ void ReaderActivity::onGoToBmpViewer(const std::string& path) {
 void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
   const auto xtcPath = xtc->getPath();
   currentBookPath = xtcPath;
-  activityManager.replaceActivity(std::make_unique<XtcReaderActivity>(renderer, mappedInput, std::move(xtc)));
+  activityManager.replaceActivity(
+      std::make_unique<XtcReaderActivity>(renderer, mappedInput, std::move(xtc), initialRefreshCountdown()));
 }
 
 void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   const auto txtPath = txt->getPath();
   currentBookPath = txtPath;
-  activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt)));
+  activityManager.replaceActivity(
+      std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt), initialRefreshCountdown()));
 }
 
 void ReaderActivity::onEnter() {

@@ -49,10 +49,14 @@ class TxtReaderActivity final : public Activity {
   bool consumeLongPowerButtonHold();
   bool executePowerButtonAction();
   bool executeLongPressBackAction();
+  void openReaderMenu();
 
  public:
-  explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt)
-      : Activity("TxtReader", renderer, mappedInput), txt(std::move(txt)) {}
+  explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt,
+                             int initialRefreshCountdown)
+      : Activity("TxtReader", renderer, mappedInput),
+        txt(std::move(txt)),
+        pagesUntilFullRefresh(initialRefreshCountdown) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -63,6 +67,7 @@ class TxtReaderActivity final : public Activity {
   }
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
+  bool handlesReaderPowerSettingsOverride() const override { return true; }
   std::string getCurrentBookPath() const override { return txt ? txt->getPath() : std::string{}; }
 
   // Renders the last saved page to the frame buffer without flushing to display.

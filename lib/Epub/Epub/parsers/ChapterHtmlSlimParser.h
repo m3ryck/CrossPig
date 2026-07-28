@@ -2,6 +2,7 @@
 
 #include <Arena.h>
 #include <HalStorage.h>
+#include <ZipFile.h>
 #include <expat.h>
 
 #include <climits>
@@ -22,10 +23,13 @@
 class Page;
 class GfxRenderer;
 class Epub;
-
 #define MAX_WORD_SIZE 200
 
 class ChapterHtmlSlimParser {
+ public:
+  enum class ParseStatus { More, Done, Error };
+
+ private:
   static constexpr uint8_t MAX_SIMPLE_TABLE_COLUMNS = 8;
   static constexpr uint16_t MAX_SIMPLE_TABLE_CELLS = 64;
   static constexpr uint16_t MAX_SIMPLE_TABLE_CELL_WORDS = 160;
@@ -54,6 +58,11 @@ class ChapterHtmlSlimParser {
   uint16_t currentTextRunBytes = 0;
   bool nextWordContinues = false;  // true when next flushed word attaches to previous (inline element boundary)
   std::unique_ptr<ParsedText> currentTextBlock = nullptr;
+  // Ruby text state
+  bool inRuby = false;
+  int rubyStartWordIndex = -1;
+  bool collectingRubyText = false;
+  std::string rubyTextBuffer;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
   int fontId;
@@ -81,12 +90,28 @@ class ChapterHtmlSlimParser {
   uint16_t previewMaxPages = 0;
   bool previewAnchorFound = false;
   bool previewStopRequested = false;
+  // Element ordinals (1-based, counting every startElement) used to start a footnote preview at the
+  // block enclosing the anchor rather than at the anchor itself. 0 means "no block located".
+  uint32_t previewStartOrdinal = 0;
+  uint32_t previewElementOrdinal = 0;
   bool malformedMarkupTruncated = false;
   XML_Parser activeParser = nullptr;
   FsFile parseFile_;
   size_t parseFileOffset_ = 0;
   size_t parseFileSize_ = 0;
   uint32_t parseStartTime_ = 0;
+
+  struct PendingImageExtraction {
+    std::unique_ptr<ZipFileStreamReader> stream;
+    HalFile file;
+    std::string tag;
+    std::string classAttr;
+    std::string styleAttr;
+    std::string alt;
+    std::string cachedImagePath;
+    bool failed = false;
+  };
+  std::unique_ptr<PendingImageExtraction> pendingImageExtraction_;
 
   bool ensureInputFileOpen();
 
@@ -203,6 +228,7 @@ class ChapterHtmlSlimParser {
   bool isPreviewBuild() const { return !previewAnchor.empty() && previewMaxPages > 0; }
   bool isScanningForPreviewAnchor() const { return isPreviewBuild() && !previewAnchorFound; }
   bool handlePreviewScanStart(const XML_Char** atts);
+  void locatePreviewBlockStart();
   void startPreviewAtAnchor();
   void stopPreviewIfPageLimitReached();
   bool usesSimpleCssLookup() const { return renderMode != EpubRenderMode::CrossInkDefault; }
@@ -222,6 +248,11 @@ class ChapterHtmlSlimParser {
   void flushMalformedPartialContent();
   bool appendMalformedMarkupWarningPage();
   void prewarmSectionAdvanceTable(FsFile& file) const;
+  bool startImageExtraction(const char* tag, std::string_view classAttr, std::string_view styleAttr,
+                            const std::string& alt, const std::string& resolvedPath);
+  ParseStatus pumpPendingImageExtraction();
+  bool finishPendingImageExtraction(PendingImageExtraction& pending);
+  void fallbackPendingImage(PendingImageExtraction& pending);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
   static void XMLCALL characterData(void* userData, const XML_Char* s, int len);
@@ -271,7 +302,6 @@ class ChapterHtmlSlimParser {
 
   ~ChapterHtmlSlimParser();
   bool parseAndBuildPages();
-  enum class ParseStatus { More, Done, Error };
   bool beginParse();
   ParseStatus parseStep();
   bool finishParse();  // flush the trailing page and tear down; returns true

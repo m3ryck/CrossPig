@@ -1,5 +1,6 @@
 #include "ActivityManager.h"
 
+#include <CrossInkHalFrontlight.h>
 #include <FontCacheManager.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
@@ -8,12 +9,14 @@
 
 #include <algorithm>
 
+#include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "SilentRestart.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "components/TouchRegistry.h"
 #include "home/AlertActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
@@ -21,10 +24,12 @@
 #include "home/RecentBooksActivity.h"
 #include "home/RecentBooksGridActivity.h"
 #include "network/CrossPointWebServerActivity.h"
+#include "network/NearbyBookTransferActivity.h"
 #include "network/NearbyStatsSyncActivity.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
+#include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
 namespace {
@@ -41,11 +46,16 @@ void restartToFileTransfer(const NetworkMode mode, const std::string& returnBook
 }  // namespace
 
 void ActivityManager::begin(const uint32_t renderTaskStackBytes) {
+#if defined(configNUM_CORES) && configNUM_CORES > 1
+  constexpr BaseType_t renderTaskCore = 1;
+#else
+  constexpr BaseType_t renderTaskCore = 0;
+#endif
   xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender", renderTaskStackBytes,
                           this,               // Parameters
                           1,                  // Priority
                           &renderTaskHandle,  // Task handle
-                          0                   // Pin to core 0 (PRO_CPU)
+                          renderTaskCore  // Keep long renders/cover decodes off CPU 0's idle watchdog when available
   );
   assert(renderTaskHandle != nullptr && "Failed to create render task");
   LOG_DBG("ACT", "Render task started with %lu-byte stack", static_cast<unsigned long>(renderTaskStackBytes));
@@ -62,10 +72,13 @@ void ActivityManager::renderTaskLoop() {
     // Acquire the lock before reading currentActivity to avoid a TOCTOU race
     // where the main task deletes the activity between the null-check and render().
     RenderLock lock;
+    TouchRegistry::getInstance().setEnabled(mappedInput.hasTouch());
+    TouchRegistry::getInstance().beginFrame();
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
       currentActivity->render(std::move(lock));
     }
+    TouchRegistry::getInstance().publish();
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
     TaskHandle_t waiter = nullptr;
     taskENTER_CRITICAL(&renderStateMux);
@@ -81,8 +94,22 @@ void ActivityManager::renderTaskLoop() {
 void ActivityManager::loop() {
   if (currentActivity) {
     mappedInput.setPowerAsConfirmInReaderMode(currentActivity->allowPowerAsConfirmInReaderMode());
+
+    // Frontlight quick panel: top-edge down-swipe on home-key boards, except
+    // that the open EPUB reader exposes the same action across the whole page.
+    // Pushed, so it returns to whatever was underneath — including mid-book.
+    const bool lightPanelGesture = currentActivity->usesFullScreenReaderVerticalSwipes()
+                                       ? mappedInput.wasReaderLightPanelGesture()
+                                       : mappedInput.wasLightPanelGesture();
+    if (Frontlight.present() && currentActivity->name != "FrontlightPanel" &&
+        currentActivity->allowFrontlightPanelGesture() && lightPanelGesture) {
+      pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
+      return;
+    }
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
-    currentActivity->loop();
+    if (!handleReaderPowerButtonSettingsOverride() && !handleGlobalHomeGesture()) {
+      currentActivity->loop();
+    }
   } else {
     mappedInput.setPowerAsConfirmInReaderMode(false);
   }
@@ -105,7 +132,6 @@ void ActivityManager::loop() {
       pendingAction = PendingAction::None;
 
       if (stackActivities.empty()) {
-        LOG_DBG("ACT", "No more activities on stack, going home");
         lock.unlock();  // goHome may acquire its own lock
         goHome();
         continue;  // Will launch goHome immediately
@@ -113,11 +139,8 @@ void ActivityManager::loop() {
       } else {
         currentActivity = std::move(stackActivities.back());
         stackActivities.pop_back();
-        LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
         // Handle result if necessary
         if (currentActivity->resultHandler) {
-          LOG_DBG("ACT", "Handling result for popped activity");
-
           // Move it here to avoid the case where handler calling another startActivityForResult()
           auto handler = std::move(currentActivity->resultHandler);
           currentActivity->resultHandler = nullptr;
@@ -153,7 +176,6 @@ void ActivityManager::loop() {
       } else if (pendingAction == PendingAction::Push) {
         // Move current activity to stack
         stackActivities.push_back(std::move(currentActivity));
-        LOG_DBG("ACT", "Pushed to activity stack, new size = %zu", stackActivities.size());
       }
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
@@ -180,9 +202,47 @@ void ActivityManager::loop() {
   }
 }
 
+bool ActivityManager::handleGlobalHomeGesture() {
+  if (!currentActivity || pendingAction != PendingAction::None || currentActivity->isHomeActivity() ||
+      !currentActivity->allowGlobalHomeGesture() || (!mappedInput.hasTouch() && !mappedInput.hasHomeKey())) {
+    return false;
+  }
+
+  const bool homeGesture = currentActivity->usesFullScreenReaderVerticalSwipes() ? mappedInput.wasReaderHomeGesture()
+                                                                                   : mappedInput.wasHomeGesture();
+  if (!homeGesture) {
+    return false;
+  }
+
+  if (currentActivity->handleHomeGesture()) {
+    return true;
+  }
+
+  goHome();
+  return true;
+}
+
+bool ActivityManager::handleReaderPowerButtonSettingsOverride() {
+  if (!readerPowerButtonOpensSettings()) {
+    return false;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+    if (!currentActivity->openReaderSettingsMenu()) {
+      goToSettings();
+    }
+    return true;
+  }
+
+  // Do not let reader activities run configured short/long Power actions while
+  // the button is held. Its release is reserved for restoring Settings access.
+  return mappedInput.isPressed(MappedInputManager::Button::Power);
+}
+
 void ActivityManager::exitActivity(const RenderLock& lock) {
   // Note: lock must be held by the caller
   if (currentActivity) {
+    TouchRegistry::getInstance().clear();
     currentActivity->onExit();
     currentActivity.reset();
   }
@@ -191,12 +251,14 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
 void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   // Note: no lock here, this is usually called by loop() and we may run into deadlock
   if (currentActivity) {
+    TouchRegistry::getInstance().clear();
     // Defer launch if we're currently in an activity, to avoid deleting the current activity
     // leading to the "delete this" problem
     pendingActivity = std::move(newActivity);
     pendingAction = PendingAction::Replace;
   } else {
     // No current activity, safe to launch immediately
+    TouchRegistry::getInstance().clear();
     currentActivity = std::move(newActivity);
     currentActivity->onEnter();
   }
@@ -206,15 +268,35 @@ void ActivityManager::goToFileTransfer(std::string returnBookPath) {
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput, std::move(returnBookPath)));
 }
 
-void ActivityManager::goToCalibreWireless(std::string returnBookPath) {
+void ActivityManager::goToNearbyBookSend(std::string path, const bool returnToReader) {
+  auto activity = makeUniqueNoThrow<NearbyBookTransferActivity>(
+      renderer, mappedInput, NearbyBookTransferActivity::Mode::Send, std::move(path), returnToReader);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: nearby file sender");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
+void ActivityManager::goToNearbyBookReceive() {
+  auto activity =
+      makeUniqueNoThrow<NearbyBookTransferActivity>(renderer, mappedInput, NearbyBookTransferActivity::Mode::Receive);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: nearby file receiver");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
+void ActivityManager::goToCalibreWireless(const std::string& returnBookPath) {
   restartToFileTransfer(NetworkMode::CONNECT_CALIBRE, returnBookPath);
 }
 
-void ActivityManager::goToJoinNetworkFileTransfer(std::string returnBookPath) {
+void ActivityManager::goToJoinNetworkFileTransfer(const std::string& returnBookPath) {
   restartToFileTransfer(NetworkMode::JOIN_NETWORK, returnBookPath);
 }
 
-void ActivityManager::goToHotspotFileTransfer(std::string returnBookPath) {
+void ActivityManager::goToHotspotFileTransfer(const std::string& returnBookPath) {
   restartToFileTransfer(NetworkMode::CREATE_HOTSPOT, returnBookPath);
 }
 
@@ -252,7 +334,9 @@ void ActivityManager::goToNearbyStatsSync() {
   replaceActivity(std::make_unique<NearbyStatsSyncActivity>(renderer, mappedInput));
 }
 
-void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
+void ActivityManager::goToSettings(const bool dismissOnUpSwipe) {
+  replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput, dismissOnUpSwipe));
+}
 
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
@@ -301,8 +385,12 @@ bool ActivityManager::goToOpdsServer(const uint32_t serverIndex, const bool netw
   return true;
 }
 
-void ActivityManager::goToReader(std::string path, const bool suppressBackRelease) {
-  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease));
+void ActivityManager::goToReader(std::string path, const bool suppressBackRelease, const bool allowFastInitialRefresh) {
+  // OPDS credentials are unrelated to local reading and may contain several
+  // heap-backed strings. Home reloads them lazily when it becomes active.
+  OPDS_STORE.release();
+  replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path), suppressBackRelease,
+                                                   allowFastInitialRefresh));
 }
 
 void ActivityManager::goToSleep(bool fromTimeout) {
@@ -346,6 +434,7 @@ void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
     LOG_ERR("ACT", "pendingActivity while pushActivity is not expected");
     pendingActivity.reset();
   }
+  TouchRegistry::getInstance().clear();
   pendingActivity = std::move(activity);
   pendingAction = PendingAction::Push;
 }
@@ -356,6 +445,7 @@ void ActivityManager::popActivity() {
     LOG_ERR("ACT", "pendingActivity while popActivity is not expected");
     pendingActivity.reset();
   }
+  TouchRegistry::getInstance().clear();
   pendingAction = PendingAction::Pop;
 }
 
@@ -372,6 +462,11 @@ bool ActivityManager::isReaderActivity() const {
                      [](const auto& activity) { return activity && activity->isReaderActivity(); });
 }
 
+bool ActivityManager::readerPowerButtonOpensSettings() const {
+  return mappedInput.hasTouchHardware() && SETTINGS.disableReaderTouchscreen && currentActivity &&
+         currentActivity->handlesReaderPowerSettingsOverride();
+}
+
 bool ActivityManager::hasActivityNamed(const char* activityName) const {
   const auto matches = [activityName](const auto& activity) { return activity && activity->name == activityName; };
   if (matches(currentActivity) || matches(pendingActivity)) {
@@ -380,6 +475,12 @@ bool ActivityManager::hasActivityNamed(const char* activityName) const {
 
   return std::any_of(stackActivities.begin(), stackActivities.end(), matches);
 }
+
+#ifdef SIMULATOR
+bool ActivityManager::isCurrentActivityNamed(const char* activityName) const {
+  return currentActivity && currentActivity->name == activityName;
+}
+#endif
 
 bool ActivityManager::canSnapshotForSleepOverlay() const {
   return currentActivity && currentActivity->canSnapshotForSleepOverlay();
