@@ -16,10 +16,13 @@
 
 namespace {
 constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
-// v54: TextBlock stores ruby annotations and RUBY_CONTINUE word-style markers.
-constexpr uint8_t SECTION_FILE_VERSION = 54;
+// v57: CJK gap suppression now applies only to source-glued tokens, preserving
+// explicit spaces between Hangul words. Cached page positions must rebuild.
+constexpr uint8_t SECTION_FILE_VERSION = 57;
 // Suspended incremental build: valid pages plus LUTs and a parse-watermark trailer.
-constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE;
+// Change this with layout or payload changes so stale partial pages cannot resume
+// under a different layout contract.
+constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFB;
 constexpr uint16_t INITIAL_SECTION_PAGE_LUT_ENTRIES = 1024;
 constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +

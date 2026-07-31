@@ -79,12 +79,11 @@ constexpr uint8_t styleToBitMask(EpdFontFamily::Style style) {
   return static_cast<uint8_t>(1u << (static_cast<uint8_t>(style) & 0x03));
 }
 
-constexpr unsigned long TOUCH_LOOKUP_HOLD_MS = 1000;
-
 }  // namespace
 
 void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
+  Dictionary::clearLookupDictPathOverride();
   mappedInput.setReaderTouchscreenOverride(true);
   ignoreInitialBackRelease_ = mappedInput.isPressed(MappedInputManager::Button::Back);
   std::vector<WordSelectNavigator::WordInfo> words;
@@ -125,6 +124,7 @@ void DictionaryWordSelectActivity::onEnter() {
 
 void DictionaryWordSelectActivity::onExit() {
   controller.onExit();
+  Dictionary::clearLookupDictPathOverride();
   mappedInput.setReaderTouchscreenOverride(false);
   const auto& sdFonts = renderer.getSdCardFonts();
   auto it = sdFonts.find(SETTINGS.getReaderFontId());
@@ -397,7 +397,7 @@ void DictionaryWordSelectActivity::mergeHyphenatedWords(std::vector<WordSelectNa
 }
 
 void DictionaryWordSelectActivity::openDictionarySwitch() {
-  auto picker = makeUniqueNoThrow<DictionarySelectActivity>(renderer, mappedInput, cachePath, true);
+  auto picker = makeUniqueNoThrow<DictionarySelectActivity>(renderer, mappedInput, cachePath, true, true);
   if (!picker) {
     LOG_ERR("DICT", "OOM: DictionarySelectActivity");
     return;
@@ -409,6 +409,13 @@ void DictionaryWordSelectActivity::openDictionarySwitch() {
       requestUpdate();
       return;
     }
+    const auto* selection = std::get_if<FilePathResult>(&result.data);
+    if (!selection) {
+      LOG_ERR("DICT", "Dictionary switch returned no path");
+      requestUpdate();
+      return;
+    }
+    Dictionary::setLookupDictPathOverride(selection->path.c_str());
     controller.startLookup(controller.getLookupWord(), false);
   });
 }
@@ -489,28 +496,17 @@ void DictionaryWordSelectActivity::loop() {
     return;
   }
 
-  int heldTouchX = 0;
-  int heldTouchY = 0;
-  if (mappedInput.isScreenTouchLongPress(heldTouchX, heldTouchY, TOUCH_LOOKUP_HOLD_MS)) {
-    bool touchedWord = false;
-    navigator.selectWordAtPoint(heldTouchX, heldTouchY, renderer.getLineHeight(SETTINGS.getReaderFontId()),
-                                &touchedWord);
-    if (touchedWord && navigator.beginTouchMultiSelect()) {
-      touchDragLookup_ = true;
-      requestUpdate();
-    }
-    return;
-  }
-
   int touchX = 0;
   int touchY = 0;
-  bool touchedWord = false;
-  if (mappedInput.wasScreenTapped(touchX, touchY)) {
+  if (mappedInput.wasScreenTouchDown(touchX, touchY)) {
+    bool touchedWord = false;
     navigator.selectWordAtPoint(touchX, touchY, renderer.getLineHeight(SETTINGS.getReaderFontId()), &touchedWord);
-  }
-  if (touchedWord) {
-    const auto* selected = navigator.getSelected();
-    if (selected) controller.lookupOrPopup(navigator.getLookup(*selected));
+    if (touchedWord && navigator.beginTouchMultiSelect()) {
+      touchDragLookup_ = true;
+      // Finish this fast refresh before lookup can replace the screen, so the
+      // touched word always provides visible press feedback on e-ink.
+      requestUpdateAndWait();
+    }
     return;
   }
 #endif

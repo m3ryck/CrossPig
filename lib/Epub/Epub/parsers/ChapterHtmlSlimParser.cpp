@@ -596,7 +596,8 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   // flush the buffer
   partWordBuffer[partWordBufferIndex] = '\0';
   currentTextBlock->addWord(partWordBuffer, fontStyle, false, nextWordContinues,
-                            honorsPublisherDecorations() && effectiveBackgroundBlack);
+                            honorsPublisherDecorations() && effectiveBackgroundBlack,
+                            insideFootnoteLink ? currentFootnote.linkId : 0);
   currentTextRunBytes = static_cast<uint16_t>(
       std::min<size_t>(currentTextRunBytes + static_cast<size_t>(partWordBufferIndex), UINT16_MAX));
   partWordBufferIndex = 0;
@@ -1069,7 +1070,7 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
       currentPage->elements.push_back(std::move(fragment));
       markCurrentPageFromCurrentElement();
       for (const auto& footnote : fragmentFootnotes) {
-        currentPage->addFootnote(footnote.number, footnote.href);
+        currentPage->addFootnote(footnote.number, footnote.href, footnote.linkId);
       }
       currentPageNextY += fragmentHeight;
 
@@ -1971,7 +1972,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
   // Ruby tag handling
   if (strcmp(name, "ruby") == 0) {
-    self->flushPartWordBuffer();
+    // <ruby> is an inline element: a base that follows text with no whitespace between them
+    // continues the same visual word, exactly like <b>/<i> handling in endElement().
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+      self->nextWordContinues = true;
+    }
     self->inRuby = true;
     self->rubyStartWordIndex = self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0;
     if (self->currentTextBlock) {
@@ -1982,7 +1988,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
   if (strcmp(name, "rt") == 0) {
-    self->flushPartWordBuffer();
+    if (self->partWordBufferIndex > 0) {
+      self->flushPartWordBuffer();
+    }
     self->collectingRubyText = true;
     self->depth += 1;
     return;
@@ -2021,6 +2029,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       strncpy(self->currentFootnote.href, href, sizeof(self->currentFootnote.href) - 1);
       self->currentFootnote.href[sizeof(self->currentFootnote.href) - 1] = '\0';
       self->currentFootnote.number[0] = '\0';
+      self->currentFootnote.linkId = self->nextFootnoteLinkId;
+      self->nextFootnoteLinkId = static_cast<uint8_t>((self->nextFootnoteLinkId % 63) + 1);
       self->currentFootnoteLinkTextLen = 0;
 
       // Apply underline style to visually indicate the link
@@ -2145,13 +2155,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
         self->flushPartWordBuffer();
       }
-      // Tag the new block so startNewTextBlock can inject a full line-height gap if
-      // the block remains empty (i.e. <br> is a section separator between paragraphs).
-      // If the block gets text added before the next block opens it becomes non-empty,
-      // goes through makePages() normally, and the flag has no effect (inline <br> case).
-      BlockStyle brStyle = self->blockStyleBuf_[self->blockStyleCount_ - 1].withoutBottom();
-      if (self->currentTextBlock) {
-        brStyle = self->currentTextBlock->getBlockStyle();
+      // A <br> after text is a line break: start the next block without the
+      // container's vertical margins, which browsers do not re-apply at a
+      // line break. A <br> that leaves its block empty (a consecutive or
+      // standalone <br>) retains those margins and becomes a scene break.
+      // Use the active stack style rather than the current block so styles
+      // from a closed element cannot leak into the next paragraph.
+      BlockStyle brStyle = self->blockStyleBuf_[self->blockStyleCount_ - 1];
+      if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+        brStyle = brStyle.withoutTop().withoutBottom();
       }
       brStyle.fromBrElement = true;
       self->startNewTextBlock(brStyle);
@@ -2641,6 +2653,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       }
     }
     self->rubyTextBuffer.clear();
+    // Inline close: the next base (e.g. 字 in <ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby>) joins the
+    // preceding one with no space. Whitespace in the source resets this in characterData().
+    if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+      self->nextWordContinues = true;
+    }
     self->depth -= 1;
     return;
   }
@@ -2648,6 +2665,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
     self->inRuby = false;
     self->rubyStartWordIndex = -1;
     self->rubyTextBuffer.clear();
+    // Inline close: text following </ruby> joins the annotated base with no space.
+    if (self->currentTextBlock && !self->currentTextBlock->isEmpty()) {
+      self->nextWordContinues = true;
+    }
     self->depth -= 1;
     return;
   }
@@ -2709,6 +2730,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       entry.number[sizeof(entry.number) - 1] = '\0';
       strncpy(entry.href, self->currentFootnote.href, sizeof(entry.href) - 1);
       entry.href[sizeof(entry.href) - 1] = '\0';
+      entry.linkId = self->currentFootnote.linkId;
       int wordIndex =
           self->wordsExtractedInBlock + (self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0);
       self->pendingFootnotes.push_back({wordIndex, entry});
@@ -3192,11 +3214,23 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
     }
   }
 
-  // Track cumulative words to assign footnotes to the page containing their anchor
+  // Keep a link available on every page where its text is visible. Usually this
+  // adds one compact entry; a long wrapped link can span lines or pages.
+  for (uint16_t wordIndex = 0; wordIndex < line->wordCount(); ++wordIndex) {
+    const uint8_t linkId = line->wordLinkId(wordIndex);
+    if (linkId == 0) continue;
+    const auto entry = std::find_if(pendingFootnotes.begin(), pendingFootnotes.end(),
+                                    [linkId](const auto& pending) { return pending.second.linkId == linkId; });
+    if (entry != pendingFootnotes.end()) {
+      currentPage->addFootnote(entry->second.number, entry->second.href, entry->second.linkId);
+    }
+  }
+
+  // Track cumulative words to retire links after laying out their final word.
   wordsExtractedInBlock += line->wordCount();
   auto footnoteIt = pendingFootnotes.begin();
   while (footnoteIt != pendingFootnotes.end() && footnoteIt->first <= wordsExtractedInBlock) {
-    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href);
+    currentPage->addFootnote(footnoteIt->second.number, footnoteIt->second.href, footnoteIt->second.linkId);
     ++footnoteIt;
   }
   pendingFootnotes.erase(pendingFootnotes.begin(), footnoteIt);
@@ -3270,7 +3304,7 @@ void ChapterHtmlSlimParser::makePages() {
   // edge cases where a footnote's word index equals the exact block size.
   if (!pendingFootnotes.empty() && currentPage) {
     for (const auto& [idx, fn] : pendingFootnotes) {
-      currentPage->addFootnote(fn.number, fn.href);
+      currentPage->addFootnote(fn.number, fn.href, fn.linkId);
     }
     pendingFootnotes.clear();
   }

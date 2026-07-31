@@ -352,6 +352,7 @@ void DictionaryDefinitionActivity::onEnter() {
 
 void DictionaryDefinitionActivity::onExit() {
   controller.onExit();
+  Dictionary::clearLookupDictPathOverride();
   Activity::onExit();
 }
 
@@ -501,6 +502,10 @@ void DictionaryDefinitionActivity::wrapText() {
   // of reopening the dictionary metadata files before every layout pass.
   const DictInfo info = Dictionary::readInfo(foundLocation.folderPath.c_str());
   const DictDefinitionSlice slice = Dictionary::resolveDefinitionSlice(foundLocation, info);
+  definitionReadFailed_ = !slice.found;
+  if (definitionReadFailed_) {
+    LOG_ERR("DICT", "Failed to resolve definition slice for %s", foundLocation.folderPath.c_str());
+  }
   definitionOffset_ = slice.offset;
   definitionSize_ = slice.size;
   definitionIsHtml_ = slice.isHtml;
@@ -546,6 +551,11 @@ void DictionaryDefinitionActivity::loadPage(int page) {
   pagePool_.clear();
   collectTargetPage_ = page;
   collectLineCount_ = 0;
+
+  if (definitionReadFailed_) {
+    totalPages = 1;
+    return;
+  }
 
   if (definitionIsHtml_) {
     wrapHtml();
@@ -749,7 +759,10 @@ void DictionaryDefinitionActivity::wrapHtml() {
   const std::string dictPath = foundLocation.folderPath + ".dict";
   DefinitionSpanFeedContext feedCtx{this, &wrapper};
   const DictHtmlRenderer::SpanSink spanSink{&feedCtx, &DictionaryDefinitionActivity::feedSpanToWrapper};
-  htmlRenderer_.renderFromFileStreaming(dictPath.c_str(), definitionOffset_, definitionSize_, spanSink);
+  if (!htmlRenderer_.renderFromFileStreaming(dictPath.c_str(), definitionOffset_, definitionSize_, spanSink)) {
+    LOG_ERR("DICT", "Failed to read HTML definition");
+    definitionReadFailed_ = true;
+  }
   wrapper.finish();
   // Only the kept page's span text was ever copied into layoutLines.
 }
@@ -850,8 +863,17 @@ void DictionaryDefinitionActivity::wrapPlain() {
   // Stream from .dict file — the full definition is never held in RAM.
   const std::string dictPath = foundLocation.folderPath + ".dict";
   HalFile dictFile;
-  if (!Storage.openFileForRead("DICT", dictPath.c_str(), dictFile)) return;
-  dictFile.seekSet(definitionOffset_);
+  if (!Storage.openFileForRead("DICT", dictPath.c_str(), dictFile)) {
+    LOG_ERR("DICT", "Failed to open definition %s", dictPath.c_str());
+    definitionReadFailed_ = true;
+    return;
+  }
+  if (!dictFile.seekSet(definitionOffset_)) {
+    LOG_ERR("DICT", "Failed to seek definition %s", dictPath.c_str());
+    definitionReadFailed_ = true;
+    dictFile.close();
+    return;
+  }
 
   uint32_t remaining = definitionSize_;
   char chunk[512];
@@ -859,7 +881,11 @@ void DictionaryDefinitionActivity::wrapPlain() {
   while (remaining > 0) {
     uint32_t toRead = remaining < sizeof(chunk) ? remaining : static_cast<uint32_t>(sizeof(chunk));
     int n = dictFile.read(reinterpret_cast<uint8_t*>(chunk), static_cast<int>(toRead));
-    if (n <= 0) break;
+    if (n <= 0) {
+      LOG_ERR("DICT", "Failed reading definition %s", dictPath.c_str());
+      definitionReadFailed_ = true;
+      break;
+    }
     remaining -= static_cast<uint32_t>(n);
 
     for (int ci = 0; ci < n; ci++) {
@@ -952,7 +978,7 @@ void DictionaryDefinitionActivity::extractWordsFromLayout() {
 }
 
 void DictionaryDefinitionActivity::openDictionarySwitch() {
-  auto picker = makeUniqueNoThrow<DictionarySelectActivity>(renderer, mappedInput, cachePath, true);
+  auto picker = makeUniqueNoThrow<DictionarySelectActivity>(renderer, mappedInput, cachePath, true, true);
   if (!picker) {
     LOG_ERR("DICT", "OOM: DictionarySelectActivity");
     return;
@@ -967,6 +993,13 @@ void DictionaryDefinitionActivity::openDictionarySwitch() {
       requestUpdate();
       return;
     }
+    const auto* selection = std::get_if<FilePathResult>(&result.data);
+    if (!selection) {
+      LOG_ERR("DICT", "Dictionary switch returned no path");
+      requestUpdate();
+      return;
+    }
+    Dictionary::setLookupDictPathOverride(selection->path.c_str());
     dictionarySwitchLookupInProgress = true;
     controller.startLookup(headword, false);
   });
@@ -1061,10 +1094,32 @@ void DictionaryDefinitionActivity::loop() {
     }
 
 #if CROSSINK_APP_CAP_TOUCH
+    if (touchDragLookup_) {
+      int dragX = 0;
+      int dragY = 0;
+      if (mappedInput.isScreenTouchHeld(dragX, dragY)) {
+        if (navigator.selectWordAtPoint(dragX, dragY, getLineHeight())) {
+          requestUpdate();
+        }
+        return;
+      }
+
+      touchDragLookup_ = false;
+      controller.lookupOrPopup(navigator.finishTouchMultiSelect());
+      return;
+    }
+
     int touchX = 0;
     int touchY = 0;
-    if (mappedInput.wasScreenTapped(touchX, touchY) && navigator.selectWordAtPoint(touchX, touchY, getLineHeight())) {
-      requestUpdate();
+    if (mappedInput.wasScreenTouchDown(touchX, touchY)) {
+      bool touchedWord = false;
+      navigator.selectWordAtPoint(touchX, touchY, getLineHeight(), &touchedWord);
+      if (touchedWord && navigator.beginTouchMultiSelect()) {
+        touchDragLookup_ = true;
+        // Finish this fast refresh before lookup can replace the definition,
+        // so the touched word always provides visible press feedback on e-ink.
+        requestUpdateAndWait();
+      }
       return;
     }
 #endif
@@ -1332,6 +1387,8 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
     renderTitle();
     renderBody();
   }
+
+  if (definitionReadFailed_) GUI.drawPopup(renderer, tr(STR_DICT_READ_FAILED));
 
   if (hasModalBackground() && !dictionaryName_.empty()) {
     const int innerPadding = metrics.optionPopupInnerPadding;

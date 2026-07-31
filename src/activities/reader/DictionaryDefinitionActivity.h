@@ -111,6 +111,7 @@ class DictionaryDefinitionActivity final : public Activity {
   uint32_t definitionOffset_ = 0;
   uint32_t definitionSize_ = 0;
   bool definitionIsHtml_ = false;
+  bool definitionReadFailed_ = false;
   // Kept per lookup so a failed SD-font prewarm can use the matching built-in
   // reader font without changing the user's selected font setting.
   int definitionFontId_ = 0;
@@ -151,6 +152,9 @@ class DictionaryDefinitionActivity final : public Activity {
   bool isWordSelectMode = false;
   WordSelectNavigator navigator;
   DictionaryLookupController controller;
+#if CROSSINK_APP_CAP_TOUCH
+  bool touchDragLookup_ = false;
+#endif
 
   // Differential repaint state for in-definition word-select mode. Only consulted
   // when isWordSelectMode is true; reset on every view-mode render.

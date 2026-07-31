@@ -15,6 +15,8 @@ char Dictionary::wordBuf[256] = "";
 
 namespace {
 constexpr char DICT_BIN[] = "dictionary.bin";
+std::string lookupDictPathOverride;
+bool lookupDictPathOverrideActive = false;
 constexpr char GLOBAL_DICT_DIR[] = "/.crosspoint";
 
 bool isTextDefinitionType(char type) {
@@ -122,6 +124,11 @@ static bool readQidxOffset(HalFile& qidx, uint32_t sampleIndex, uint32_t* offset
 // ---------------------------------------------------------------------------
 
 std::string Dictionary::readDictPath(const char* cachePath) {
+  if (lookupDictPathOverrideActive) return lookupDictPathOverride;
+  return readConfiguredDictPath(cachePath);
+}
+
+std::string Dictionary::readConfiguredDictPath(const char* cachePath) {
   char binPath[128];
 
   // Try per-book dictionary.bin first when cachePath is provided.
@@ -160,6 +167,16 @@ std::string Dictionary::readDictPath(const char* cachePath) {
   if (n <= 0) return "";
   result.resize(static_cast<size_t>(n));
   return result;
+}
+
+void Dictionary::setLookupDictPathOverride(const char* folderPath) {
+  lookupDictPathOverride = folderPath ? folderPath : "";
+  lookupDictPathOverrideActive = true;
+}
+
+void Dictionary::clearLookupDictPathOverride() {
+  lookupDictPathOverrideActive = false;
+  std::string().swap(lookupDictPathOverride);
 }
 
 void Dictionary::saveGlobalDictPath(const char* folderPath) {
@@ -778,7 +795,11 @@ DictLocation Dictionary::locate(const std::string& word, const DictLookupCallbac
   const DictInfo info = readInfo(result.folderPath.c_str());
   const uint8_t suffixBytes = idxEntrySuffixBytes(info);
   HalFile idx;
-  if (!Storage.openFileForRead("DICT", dp.idx().c_str(), idx)) return result;
+  if (!Storage.openFileForRead("DICT", dp.idx().c_str(), idx)) {
+    LOG_ERR("DICT", "Failed to open index %s", dp.idx().c_str());
+    result.readError = true;
+    return result;
+  }
 
   const uint32_t idxFileSize = static_cast<uint32_t>(idx.fileSize());
   uint32_t startByte = 0;
@@ -804,7 +825,12 @@ DictLocation Dictionary::locate(const std::string& word, const DictLookupCallbac
 
   if (cbs.onProgress) cbs.onProgress(cbs.ctx, 70);
 
-  idx.seekSet(startByte);
+  if (!idx.seekSet(startByte)) {
+    LOG_ERR("DICT", "Failed to seek index %s", dp.idx().c_str());
+    result.readError = true;
+    idx.close();
+    return result;
+  }
 
   // The start bound deliberately precedes any case-equivalent samples. Scan
   // until lexical order passes the target so a match exactly on the next
@@ -816,10 +842,20 @@ DictLocation Dictionary::locate(const std::string& word, const DictLookupCallbac
     }
 
     int len = readWordInto(idx, wordBuf, sizeof(wordBuf));
-    if (len < 0) break;
+    if (len < 0) {
+      // The loop already guards normal EOF with position() < fileSize(), so a
+      // failed read here means a truncated or unreadable index.
+      LOG_ERR("DICT", "Failed reading index entry from %s", dp.idx().c_str());
+      result.readError = true;
+      break;
+    }
 
     uint8_t suffix[12];
-    if (idx.read(suffix, suffixBytes) != suffixBytes) break;
+    if (idx.read(suffix, suffixBytes) != suffixBytes) {
+      LOG_ERR("DICT", "Truncated index entry in %s", dp.idx().c_str());
+      result.readError = true;
+      break;
+    }
 
     int cmp = cistrcmp(wordBuf, word.c_str());
     if (cmp == 0) {

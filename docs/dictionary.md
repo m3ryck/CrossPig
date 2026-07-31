@@ -22,7 +22,7 @@ Minimum requirement: one `.dict` and one `.idx` file in the same folder. Their f
 1. Copy your dictionary folder(s) to one of these directories on the SD card:
    - `/.dictionaries/` (checked first)
    - `/dictionaries/`
-2. If only one dictionary is found and no dictionary has been selected before, it is selected automatically.
+2. If no dictionary has been selected before, the first dictionary in the alphabetical device list is selected automatically.
 3. To choose between multiple dictionaries, open **Settings -> Dictionary** on the device and select one from the list.
 
 To deselect the current dictionary, select **None** from the list.
@@ -123,6 +123,8 @@ Each book can have its own dictionary, independent of the global setting.
 
 The global dictionary is automatically restored whenever the book is closed. Changing a book's dictionary does not affect the global setting or other books.
 
+Using **Switch Dictionary** during a word lookup is temporary. It applies only to that lookup flow; when lookup closes, the reader returns to the book's dictionary override, or the global dictionary when the book has no override.
+
 ---
 
 ## Lookup History
@@ -208,3 +210,17 @@ python3 scripts/dictionary_tools.py merge \
 Specify `--source` once per dictionary to include. The merged output contains the full union of all headwords and synonyms. When the same word appears in multiple sources, definitions are concatenated in source order.
 
 Source dictionaries must be prepared (decompressed `.dict` files) before merging. The output is a complete, ready-to-use StarDict dictionary that can be copied directly to the SD card.
+
+## Where to find dictionaries
+
+> credit to https://github.com/koreader/koreader/wiki/Dictionary-support for the list.
+
+- The [reader.dict](https://www.reader-dict.com) (ex "BoboTiG/ebook-reader-dict") project provides StarDict version of daily dumps of [Wiktionary](https://www.wiktionary.org/) monolingual dictionaries for a variety of languages. It also provides [non-free multilingual](https://www.reader-dict.com) dictionaries.
+- The [WikDict](https://www.wikdict.com) project provides free bilingual dictionaries based on [Wiktionary](https://www.wiktionary.org/) for a lot of language pairs. StarDict versions can be [downloaded from here](https://download.wikdict.com/dictionaries/stardict/).
+- The [`Vuizur/Wiktionary-Dictionaries`](https://github.com/Vuizur/Wiktionary-Dictionaries) repository contains dictionaries based on [Wiktionary](https://www.wiktionary.org/) from many languages to English, including English-English.
+- The [DictInfo](https://www.dictinfo.com/) website provides outdated monolingual dictionaries based on [Wiktionary](https://www.wiktionary.org/).
+- The [Firedict site](https://tuxor1337.frama.io/firedict/dictionaries.html) contains a list of freely available dictionaries.
+- [wiktionary_stardict](https://xxyzz.github.io/wiktionary_stardict/): update monthly.
+- [Fictionaries](https://fictionary.gumroad.com/) provides dictionaries for various speculative fiction books and series.
+- [World Factbooks Archive](https://github.com/MilkMp/CIA-World-Factbooks-Archive-1990-2025) provides 36 years of CIA's World Factbook dictionaries in StarDict format.
+- [StarDict-Hebrew](https://github.com/Uri-Tauber/StarDict-Hebrew) Hebrew-English StarDict versions of Babylon dictionaries.

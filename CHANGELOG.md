@@ -33,6 +33,11 @@
 
 ### Fixed
 
+- CSS-heavy EPUBs now stop stylesheet parsing safely before low-memory rule storage can reboot X3/X4 devices.
+- KOReader Sync now sends CrossPoint-specific position data only to the official CrossPoint Sync server.
+- EPUB text now preserves explicit spaces between Hangul and other CJK words.
+- Web file uploads now use the simulator's mapped WebSocket port while preserving ports 80/81 on devices.
+- EPUBs that use `<br>` between flowing paragraphs no longer add extra vertical spacing after every line break; consecutive breaks still create a scene break.
 - Lyra Home headers now keep the battery icon and percentage aligned with safer clearance below the top bezel.
 - Dictionary lookups that miss can now switch dictionaries without returning to the reader.
 - Reading Stats button hints now follow customized front-button assignments.
@@ -66,11 +71,18 @@
 - Backing out of Manage Fonts without changing fonts now returns to Font Options instead of Home.
 - The “Entering sleep” message now follows the reader's current orientation, including book-specific orientation overrides.
 - Underlined EPUB text now draws a continuous line across the spaces between adjacent underlined words.
+- Struck-through EPUB text now draws a continuous line across the spaces between adjacent struck-through words.
 - Chapter openers whose decorative image sits inside the heading (chapter number, ornament, then title) now stay together on one page instead of splitting the chapter number onto its own page.
 - Chapter openers with an inline ornament image no longer stack an oversized gap between the chapter number, the ornament, and the title.
 - Unsupported EPUB chapter image formats no longer trigger the low-memory image warning.
 - Returning to Home after reading with an SD card font now releases the reader's font caches so covers and thumbnails retain enough contiguous memory to render.
 - EPUB footnote and cross-reference previews now show the whole note. Previews of notes whose link target sits in the middle of a paragraph no longer start mid-sentence with the opening text missing.
+
+## [v1.4.0.1] - 2026-07-28
+
+### Added
+
+- Updates to support Xteink device detection so the correct display panel driver is used.
 
 ## [v1.4.0] - 2026-07-10
 

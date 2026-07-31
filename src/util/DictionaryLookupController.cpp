@@ -13,6 +13,7 @@
 #include "MappedInputManager.h"
 #include "Memory.h"
 #include "MemoryBudget.h"
+#include "components/TouchHeaderBackButton.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
@@ -62,6 +63,7 @@ void DictionaryLookupController::startLookup(const std::string& word, bool recor
   lookupDone = false;
   lookupCancelled = false;
   lookupCancelRequested = false;
+  lookupReadError = false;
   recordHistory_ = recordHistory;
   state = LookupState::LookingUp;
   // CLEANUP: on Auto-only commit, delete only this line (gate below stays — it's the Auto check)
@@ -110,6 +112,11 @@ DictionaryLookupController::LookupEvent DictionaryLookupController::handleInput(
         return LookupEvent::FoundDefinition;
       }
 
+      if (lookupReadError) {
+        showReadError();
+        return LookupEvent::None;
+      }
+
       // Try stem variants (locate only — no definition loaded into RAM)
       auto stems = Dictionary::getStemVariants(lookupWord);
       for (const auto& stem : stems) {
@@ -120,6 +127,10 @@ DictionaryLookupController::LookupEvent DictionaryLookupController::handleInput(
           foundStatus = nextIsSuggestion ? FoundStatus::Suggestion : FoundStatus::Stem;
           nextIsSuggestion = false;
           return LookupEvent::FoundDefinition;
+        }
+        if (loc.readError) {
+          showReadError();
+          return LookupEvent::None;
         }
       }
 
@@ -151,6 +162,7 @@ DictionaryLookupController::LookupEvent DictionaryLookupController::handleInput(
   if (state == LookupState::AltFormPrompt) {
 #if CROSSINK_APP_CAP_TOUCH
     freeink::ui::ActionId touchAction = freeink::ui::NO_ACTION;
+    const bool headerTapped = TouchHeaderBackButton::wasTapped(mappedInput, renderer);
     if (altFormUiReady && mappedInput.hasTouch()) {
       const auto event = altFormUiApp.route(touchSnapshotFrom(mappedInput));
       if (altFormUiApp.invalidated()) owner.requestUpdate();
@@ -179,7 +191,7 @@ DictionaryLookupController::LookupEvent DictionaryLookupController::handleInput(
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)
 #if CROSSINK_APP_CAP_TOUCH
-        || touchAction == ACTION_ALT_FORM_NO
+        || headerTapped || touchAction == ACTION_ALT_FORM_NO
 #endif
     ) {
       state = LookupState::Idle;
@@ -189,7 +201,7 @@ DictionaryLookupController::LookupEvent DictionaryLookupController::handleInput(
     return LookupEvent::None;
   }
 
-  if (state == LookupState::NotFound) {
+  if (state == LookupState::NotFound || state == LookupState::ReadError) {
 #if CROSSINK_APP_CAP_TOUCH
     int touchX = 0;
     int touchY = 0;
@@ -249,10 +261,17 @@ bool DictionaryLookupController::render() {
 
   if (state == LookupState::AltFormPrompt) {
     const int pageWidth = renderer.getScreenWidth();
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   tr(STR_DICT_SEARCH_ALT_FORMS));
-    const int y =
-        metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + renderer.getLineHeight(UI_10_FONT_ID);
+    const Rect header{0, metrics.topPadding, pageWidth, TouchHeaderBackButton::height(metrics, mappedInput)};
+#if CROSSINK_APP_CAP_TOUCH
+    if (mappedInput.hasTouchHardware()) {
+      TouchHeaderBackButton::draw(renderer, altFormUiTarget, header, tr(STR_DICT_SEARCH_ALT_FORMS), true);
+    } else
+#endif
+    {
+      GUI.drawHeader(renderer, header, tr(STR_DICT_SEARCH_ALT_FORMS));
+    }
+    const int y = metrics.topPadding + TouchHeaderBackButton::height(metrics, mappedInput) + metrics.verticalSpacing +
+                  renderer.getLineHeight(UI_10_FONT_ID);
     renderer.drawCenteredText(UI_10_FONT_ID, y, altFormWord.c_str());
 #if CROSSINK_APP_CAP_TOUCH
     if (mappedInput.hasTouch()) {
@@ -269,8 +288,9 @@ bool DictionaryLookupController::render() {
     return true;
   }
 
-  if (state == LookupState::NotFound) {
-    GUI.drawPopup(renderer, tr(STR_DICT_NOT_FOUND));
+  if (state == LookupState::NotFound || state == LookupState::ReadError) {
+    const char* message = state == LookupState::ReadError ? tr(STR_DICT_READ_FAILED) : tr(STR_DICT_NOT_FOUND);
+    GUI.drawPopup(renderer, message);
 #if CROSSINK_APP_CAP_TOUCH
     if (mappedInput.hasTouch()) {
       const Rect switchRect = dictionarySwitchTouchRect(renderer);
@@ -374,6 +394,12 @@ void DictionaryLookupController::handleLookupFailed() {
   LookupHistory::addWordIf(cachePath, lookupWord, LookupHistory::Status::NotFound, recordHistory_);
 }
 
+void DictionaryLookupController::showReadError() {
+  nextIsSuggestion = false;
+  state = LookupState::ReadError;
+  owner.requestUpdate();
+}
+
 void DictionaryLookupController::progressCallback(void* ctx, int percent) {
   auto* self = static_cast<DictionaryLookupController*>(ctx);
   self->lookupProgress = percent;
@@ -399,6 +425,7 @@ void DictionaryLookupController::runLookup() {
     return;
   }
   foundLocation = Dictionary::locate(lookupWord, cbs, cachePath.c_str());
+  lookupReadError = foundLocation.readError;
   lookupCancelled = lookupCancelRequested.load();
   lookupDone = true;
   logDictionaryLookupTaskEnd();

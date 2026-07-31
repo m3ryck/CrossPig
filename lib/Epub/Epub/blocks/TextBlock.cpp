@@ -103,6 +103,13 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
                      const std::vector<uint8_t>& wordFlags, const BlockStyle& blockStyle,
                      std::vector<std::string> rubyTexts)
     : blockStyle(blockStyle), rubyTexts(std::move(rubyTexts)) {
+  // A ruby-less line needs no per-word ruby vector. ParsedText passes one for
+  // every extracted line once a book contains any ruby, so free all-empty
+  // vectors before they stay resident with the page.
+  if (!hasRuby()) {
+    this->rubyTexts = std::vector<std::string>{};
+  }
+
   const bool hasBionic = !bionicBoundary.empty();
   const bool hasGuideDots = !guideDotXOffset.empty();
   const bool hasWordFlags = !wordFlags.empty();
@@ -320,7 +327,19 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         strikeWidth = (strikeWidth + 1) / 2;
       }
 
-      renderer.drawLine(startX, strikeY, startX + strikeWidth, strikeY, 3, foregroundBlack);
+      int strikeEndX = startX + strikeWidth;
+      if (i + 1 < numWords) {
+        const EpdFontFamily::Style nextStyle = wordStyle(i + 1);
+        const bool nextSharesBaseline = (nextStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) ==
+                                        (currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB));
+        if ((nextStyle & EpdFontFamily::STRIKETHROUGH) != 0 && nextSharesBaseline) {
+          const int nextStartX = wordXpos(i + 1) + x;
+          strikeEndX = std::max(strikeEndX, nextStartX);
+          startX = std::min(startX, nextStartX);
+        }
+      }
+
+      renderer.drawLine(startX, strikeY, strikeEndX, strikeY, 3, foregroundBlack);
     }
   }
 }

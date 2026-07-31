@@ -24,6 +24,7 @@
 #include "activities/ActivityManager.h"
 #include "activities/home/RecentBookProgress.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/TouchHeaderBackButton.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/WifiUtils.h"
@@ -335,6 +336,8 @@ void KOReaderSyncActivity::performSync() {
                                                             ? PositionCoordinateSpace::SourceDocument
                                                             : PositionCoordinateSpace::CurrentDocument;
   bool usedRichPosition = false;
+  // The client only accepts rich positions from the official CrossPoint Sync server.
+  // Filename matching still needs source-document mapping because optimized books can diverge.
   if (remoteCoordinateSpace == PositionCoordinateSpace::CurrentDocument && remoteProgress.position.has_value()) {
     const auto richMapped = ProgressMapper::fromRichPosition(epub, *remoteProgress.position, renderer);
     if (richMapped.has_value()) {
@@ -476,9 +479,10 @@ void KOReaderSyncActivity::performUpload() {
   progress.percentage = localProgress.percentage;
   progress.device = SETTINGS.getEffectiveDeviceName();
 
-  // Rich CrossPoint position for crosspoint-sync servers (lossless
-  // CrossPoint<->CrossPoint sync); plain kosync servers ignore the extra field.
-  {
+  // Rich CrossPoint position for the default CrossPoint sync server (lossless
+  // CrossPoint<->CrossPoint sync). The HTTP client also enforces this boundary
+  // before serializing the extension.
+  if (KOREADER_STORE.usesCrossPointSyncServer()) {
     KOReaderRichPosition pos;
     const float pct = localProgress.percentage < 0.0f   ? 0.0f
                       : localProgress.percentage > 1.0f ? 1.0f
@@ -598,8 +602,13 @@ void KOReaderSyncActivity::render(RenderLock&&) {
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 tr(STR_KOREADER_SYNC));
+  const Rect header{screen.x, screen.y + metrics.topPadding, screen.width,
+                    TouchHeaderBackButton::height(metrics, mappedInput)};
+  if (mappedInput.hasTouchHardware()) {
+    TouchHeaderBackButton::draw(renderer, header, tr(STR_KOREADER_SYNC), true);
+  } else {
+    GUI.drawHeader(renderer, header, tr(STR_KOREADER_SYNC));
+  }
 
   int top = screen.y + screen.height / 2 - 40;
   if (state == NO_CREDENTIALS) {
@@ -622,7 +631,7 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 
   if (state == SHOWING_RESULT) {
     // Show comparison
-    top = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    top = screen.y + metrics.topPadding + TouchHeaderBackButton::height(metrics, mappedInput) + metrics.verticalSpacing;
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_PROGRESS_FOUND), true, EpdFontFamily::BOLD);
 
     // Remote chapter name requires Epub (loaded lazily in performSync before this state).
@@ -728,6 +737,15 @@ void KOReaderSyncActivity::loop() {
     return;
   }
 
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const Rect header{screen.x, screen.y + metrics.topPadding, screen.width,
+                    TouchHeaderBackButton::height(metrics, mappedInput)};
+  if (TouchHeaderBackButton::wasTapped(mappedInput, header)) {
+    returnToReader();
+    return;
+  }
+
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE || state == SYNC_COMPLETE) {
     if (autoReturnAt != 0 && millis() >= autoReturnAt) {
       returnToReader();
@@ -752,7 +770,8 @@ void KOReaderSyncActivity::loop() {
     {
       const auto& metrics = UITheme::getInstance().getMetrics();
       const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-      const int top = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const int top =
+          screen.y + metrics.topPadding + TouchHeaderBackButton::height(metrics, mappedInput) + metrics.verticalSpacing;
       const auto actions =
           resultActionLayout(screen, metrics, top, renderer.getLineHeight(UI_10_FONT_ID), mappedInput.hasTouch());
       int touchedOption = -1;
